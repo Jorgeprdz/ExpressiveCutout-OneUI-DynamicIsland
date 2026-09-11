@@ -2,6 +2,7 @@ package com.ekoehler.expressivecutout.service
 
 import android.accessibilityservice.AccessibilityService
 import android.content.res.Configuration
+import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import com.ekoehler.expressivecutout.core.CutoutSignal
@@ -10,9 +11,20 @@ import com.ekoehler.expressivecutout.core.IslandEventBus
 import com.ekoehler.expressivecutout.events.MediaPlaybackMonitor
 import com.ekoehler.expressivecutout.events.SystemEventMonitor
 import com.ekoehler.expressivecutout.overlay.IslandOverlayController
+import com.ekoehler.expressivecutout.permissions.Permissions
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 
 /**
  * The always-on host of the island. Its main purpose is to provide a context that can add
@@ -28,6 +40,9 @@ class CutoutAccessibilityService : AccessibilityService() {
     private var mediaPlayback: MediaPlaybackMonitor? = null
     private var lastAssistantKey: String? = null
 
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var notificationRecoveryJob: Job? = null
+
     /**
      * Starts the overlay and the two event monitors, and publishes the service so the rest of the
      * app can see that the island is live. Mirrored by [teardown].
@@ -39,6 +54,42 @@ class CutoutAccessibilityService : AccessibilityService() {
         mediaPlayback = MediaPlaybackMonitor(this).also { it.start() }
         instance = this
         _bound.value = true
+        startNotificationListenerRecovery()
+    }
+
+    /**
+     * Watches the notification-listener binding while this always-on accessibility service is alive.
+     * If Android or an OEM silently drops the listener while notification access is still granted,
+     * request a framework rebind with bounded exponential backoff. The retry loop is active only
+     * while the listener is actually disconnected, so there is no healthy-state polling cost.
+     */
+    private fun startNotificationListenerRecovery() {
+        notificationRecoveryJob?.cancel()
+        notificationRecoveryJob = serviceScope.launch {
+            CutoutNotificationListenerService.bound
+                .distinctUntilChanged()
+                .collectLatest { listenerBound ->
+                    if (listenerBound ||
+                        !Permissions.isNotificationAccessGranted(this@CutoutAccessibilityService)
+                    ) {
+                        return@collectLatest
+                    }
+
+                    var retryDelayMs = INITIAL_REBIND_DELAY_MS
+                    while (
+                        isActive &&
+                        Permissions.isNotificationAccessGranted(this@CutoutAccessibilityService) &&
+                        !CutoutNotificationListenerService.bound.value
+                    ) {
+                        Log.w(TAG, "Notification listener not bound; requesting framework rebind")
+                        CutoutNotificationListenerService.requestRebind(
+                            this@CutoutAccessibilityService,
+                        )
+                        delay(retryDelayMs)
+                        retryDelayMs = (retryDelayMs * 2).coerceAtMost(MAX_REBIND_DELAY_MS)
+                    }
+                }
+        }
     }
 
     /**
@@ -188,6 +239,7 @@ class CutoutAccessibilityService : AccessibilityService() {
      */
     override fun onDestroy() {
         teardown()
+        serviceScope.cancel()
         super.onDestroy()
     }
 
@@ -196,6 +248,8 @@ class CutoutAccessibilityService : AccessibilityService() {
      * twice, because unbind and destroy both reach it.
      */
     private fun teardown() {
+        notificationRecoveryJob?.cancel()
+        notificationRecoveryJob = null
         _bound.value = false
         instance = null
         mediaPlayback?.stop()
@@ -207,6 +261,10 @@ class CutoutAccessibilityService : AccessibilityService() {
     }
 
     companion object {
+        private const val TAG = "CutoutAccessibility"
+        private const val INITIAL_REBIND_DELAY_MS = 1_000L
+        private const val MAX_REBIND_DELAY_MS = 30_000L
+
         /**
          * The live service instance while bound, used by [performGlobal] to fire system-wide actions
          * for the expanded "center" shortcuts. Held statically (the service has no android:process, so
