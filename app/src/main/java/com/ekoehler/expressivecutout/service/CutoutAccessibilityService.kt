@@ -22,7 +22,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
@@ -66,29 +65,27 @@ class CutoutAccessibilityService : AccessibilityService() {
     private fun startNotificationListenerRecovery() {
         notificationRecoveryJob?.cancel()
         notificationRecoveryJob = serviceScope.launch {
-            CutoutNotificationListenerService.bound
-                .distinctUntilChanged()
-                .collectLatest { listenerBound ->
-                    if (listenerBound ||
-                        !Permissions.isNotificationAccessGranted(this@CutoutAccessibilityService)
-                    ) {
-                        return@collectLatest
-                    }
-
-                    var retryDelayMs = INITIAL_REBIND_DELAY_MS
-                    while (
-                        isActive &&
-                        Permissions.isNotificationAccessGranted(this@CutoutAccessibilityService) &&
-                        !CutoutNotificationListenerService.bound.value
-                    ) {
-                        Log.w(TAG, "Notification listener not bound; requesting framework rebind")
-                        CutoutNotificationListenerService.requestRebind(
-                            this@CutoutAccessibilityService,
-                        )
-                        delay(retryDelayMs)
-                        retryDelayMs = (retryDelayMs * 2).coerceAtMost(MAX_REBIND_DELAY_MS)
-                    }
+            CutoutNotificationListenerService.bound.collectLatest { listenerBound ->
+                if (listenerBound ||
+                    !Permissions.isNotificationAccessGranted(this@CutoutAccessibilityService)
+                ) {
+                    return@collectLatest
                 }
+
+                var retryDelayMs = INITIAL_REBIND_DELAY_MS
+                while (
+                    isActive &&
+                    Permissions.isNotificationAccessGranted(this@CutoutAccessibilityService) &&
+                    !CutoutNotificationListenerService.bound.value
+                ) {
+                    Log.w(TAG, "Notification listener not bound; requesting framework rebind")
+                    CutoutNotificationListenerService.requestRebind(
+                        this@CutoutAccessibilityService,
+                    )
+                    delay(retryDelayMs)
+                    retryDelayMs = (retryDelayMs * 2).coerceAtMost(MAX_REBIND_DELAY_MS)
+                }
+            }
         }
     }
 
