@@ -29,12 +29,11 @@ object Android36LiveActivitySource {
             promotable = runCatching { notification.hasPromotableCharacteristics() }.getOrDefault(false),
             requested = notification.extras?.getBoolean(REQUEST_PROMOTED_ONGOING_EXTRA, false) == true,
         )
-        if (!evidence.shouldBypassOngoingFilter) return null
-
         val style = runCatching {
             Notification.Builder.recoverBuilder(context, notification).style
         }.getOrNull()
         val progress = (style as? Notification.ProgressStyle)?.toSnapshot()
+        if (!evidence.shouldBypassOngoingFilter && progress == null) return null
 
         return NativeLiveSnapshot(
             evidence = evidence,
