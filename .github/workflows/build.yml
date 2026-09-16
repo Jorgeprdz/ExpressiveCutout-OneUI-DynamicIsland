@@ -5,6 +5,7 @@ on:
     branches:
       - dev
       - fix/background-listener-recovery
+      - feature/live-activities-dynamic-island
   pull_request:
     branches:
       - dev
@@ -29,6 +30,9 @@ jobs:
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
+
+      - name: Unit tests
+        run: ./gradlew testDebugUnitTest --no-daemon
 
       - name: Assemble debug
         run: ./gradlew assembleDebug --no-daemon
