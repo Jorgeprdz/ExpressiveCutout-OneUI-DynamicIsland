@@ -19,8 +19,10 @@ import com.ekoehler.expressivecutout.core.MediaProgress
 import com.ekoehler.expressivecutout.core.MediaTransport
 import com.ekoehler.expressivecutout.core.NowPlaying
 import com.ekoehler.expressivecutout.core.NowPlayingBus
+import com.ekoehler.expressivecutout.core.live.LiveActivityRegistry
 import com.ekoehler.expressivecutout.data.AppPreferences
 import com.ekoehler.expressivecutout.data.DynamicTilePreferences
+import com.ekoehler.expressivecutout.notifications.live.SpecializedLiveActivityFactory
 import com.ekoehler.expressivecutout.overlay.loadImageBitmapOrNull
 import com.ekoehler.expressivecutout.overlay.toArtImageBitmap
 import com.ekoehler.expressivecutout.service.CutoutNotificationListenerService
@@ -63,6 +65,9 @@ class MediaPlaybackMonitor(private val context: Context) {
     /** The pending "show" emission, held for [SHOW_DEBOUNCE_MS] so a start settles into one pop. */
     private var showJob: Job? = null
 
+    /** Stable ID of the media session currently registered with the live coordinator. */
+    private var currentLiveMusicId: String? = null
+
     private val sessionsListener =
         MediaSessionManager.OnActiveSessionsChangedListener { controllers ->
             rebind(controllers.orEmpty())
@@ -103,7 +108,14 @@ class MediaPlaybackMonitor(private val context: Context) {
         watched.clear()
         scope.coroutineContext.cancelChildren()
         clearPendingShow()
+        clearLiveMusic()
         NowPlayingBus.update(null)
+    }
+
+    /** Removes the media session currently registered in the process-wide live coordinator. */
+    private fun clearLiveMusic() {
+        currentLiveMusicId?.let(LiveActivityRegistry.coordinator::remove)
+        currentLiveMusicId = null
     }
 
     /** Forgets the surfaced track and drops any pop still waiting to fire. */
@@ -175,6 +187,7 @@ class MediaPlaybackMonitor(private val context: Context) {
         if (primary == null) {
             NowPlayingBus.update(null)
             clearPendingShow()
+            clearLiveMusic()
             return
         }
 
@@ -190,13 +203,14 @@ class MediaPlaybackMonitor(private val context: Context) {
             ?: metadata?.getText(MediaMetadata.METADATA_KEY_ALBUM)?.toString()
             ?: metadata?.getText(MediaMetadata.METADATA_KEY_AUTHOR)?.toString()
 
-        var title = rawTitle
-        var artist = rawArtist
+        val title = rawTitle
+        val artist = rawArtist
 
         if (isAssistantPackage(primary.packageName)) {
             // Assistant sessions are handled exclusively via NotificationListenerService
             NowPlayingBus.update(null)
             clearPendingShow()
+            clearLiveMusic()
             return
         }
 
@@ -213,6 +227,21 @@ class MediaPlaybackMonitor(private val context: Context) {
                 progress = primary.progress(metadata, playing),
             ),
         )
+
+        val liveMusic = SpecializedLiveActivityFactory.music(
+            packageName = primary.packageName,
+            sessionId = primary.sessionToken.hashCode().toString(),
+            title = title,
+            artist = artist,
+            isPlaying = playing,
+            nowElapsedRealtime = SystemClock.elapsedRealtime(),
+            contentIntent = primary.sessionActivity,
+        )
+        if (currentLiveMusicId != liveMusic.stableId) {
+            clearLiveMusic()
+            currentLiveMusicId = liveMusic.stableId
+        }
+        LiveActivityRegistry.coordinator.upsert(liveMusic)
 
         // Pop the island when a fresh track begins playing; reset when paused so a resume re-pops.
         if (!playing) {
