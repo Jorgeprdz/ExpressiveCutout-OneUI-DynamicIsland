@@ -205,21 +205,25 @@ object StatusBarIconController {
                 continue
             }
 
-            val shouldClear = synchronized(this) {
+            val cleared = synchronized(this) {
                 val latest = pulseDeadlineElapsedRealtimeMs
                 val now = SystemClock.elapsedRealtime()
-                if (latest == deadline && !StatusBarPulseDeadline.isActive(latest, now)) {
+                if (
+                    StatusBarPulseDeadline.shouldExpire(
+                        observedDeadlineElapsedRealtimeMs = deadline,
+                        currentDeadlineElapsedRealtimeMs = latest,
+                        nowElapsedRealtimeMs = now,
+                    )
+                ) {
                     pulseDeadlineElapsedRealtimeMs = null
                     pulseExpiryJob = null
+                    setTransientNotificationIconSuppression(active = false)
                     true
                 } else {
                     false
                 }
             }
-            if (shouldClear) {
-                setTransientNotificationIconSuppression(active = false)
-                return
-            }
+            if (cleared) return
         }
     }
 
