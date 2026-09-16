@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "com.ekoehler.expressivecutout"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.ekoehler.expressivecutout"
@@ -63,5 +63,4 @@ dependencies {
 
     testImplementation(libs.junit)
     debugImplementation(libs.androidx.compose.ui.tooling)
-    testImplementation("junit:junit:4.13.2")
 }
