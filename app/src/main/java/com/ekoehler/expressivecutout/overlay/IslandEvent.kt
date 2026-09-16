@@ -161,7 +161,7 @@ data class IslandEvent(
     /** Stable LiveActivity identity; null for ordinary transient legacy events. */
     val stableId: String? = null,
 ) {
-    /** Identity Compose uses for arrival and gesture state without keying on mutable content. */
+    /** Identity Compose uses for arrival/gesture state without keying on mutable content. */
     val visualIdentity: String
         get() = stableId ?: notificationKey?.let { "notification:$it" } ?: "event:$id"
 }

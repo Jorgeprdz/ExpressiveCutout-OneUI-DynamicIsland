@@ -31,9 +31,8 @@ internal object IslandMotionPolicy {
         }
         val snap = animationDurationMs <= 0
         val durationScale = if (snap) 1f else animationDurationMs / BASE_TRANSITION_MS.toFloat()
-        val scaleSquared = durationScale * durationScale
-        val spatialStiffness = (baseSpatial / scaleSquared).coerceIn(MIN_STIFFNESS, MAX_STIFFNESS)
-        val effectStiffness = (baseEffect / scaleSquared).coerceIn(MIN_STIFFNESS, MAX_STIFFNESS)
+        val spatialStiffness = scaleStiffness(baseSpatial, animationDurationMs)
+        val effectStiffness = scaleStiffness(baseEffect, animationDurationMs)
         val spatialDamping = when (direction) {
             IslandTransitionDirection.ENTER,
             IslandTransitionDirection.EXPAND -> bounceDamping
@@ -54,6 +53,13 @@ internal object IslandMotionPolicy {
             preserveVelocity = direction == IslandTransitionDirection.PROMOTE ||
                 direction == IslandTransitionDirection.DEMOTE,
         )
+    }
+
+    /** Scales a spring so its characteristic duration follows the user's duration slider. */
+    fun scaleStiffness(baseStiffness: Float, animationDurationMs: Int): Float {
+        if (animationDurationMs <= 0) return MAX_STIFFNESS
+        val scale = animationDurationMs / BASE_TRANSITION_MS.toFloat()
+        return (baseStiffness / (scale * scale)).coerceIn(MIN_STIFFNESS, MAX_STIFFNESS)
     }
 
     private const val MIN_STIFFNESS = 25f

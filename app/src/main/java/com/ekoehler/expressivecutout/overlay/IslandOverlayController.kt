@@ -46,6 +46,9 @@ import com.ekoehler.expressivecutout.core.NowPlayingBus
 import com.ekoehler.expressivecutout.core.OnCallBus
 import com.ekoehler.expressivecutout.core.RunningTimerBus
 import com.ekoehler.expressivecutout.core.SystemEventType
+import com.ekoehler.expressivecutout.core.live.LiveActivity
+import com.ekoehler.expressivecutout.core.live.LiveActivityCoordinator
+import com.ekoehler.expressivecutout.core.live.LiveActivityRegistry
 import com.ekoehler.expressivecutout.data.AppPreferences
 import com.ekoehler.expressivecutout.data.AppearancePreferences
 import com.ekoehler.expressivecutout.data.AppearanceSettings
@@ -78,6 +81,7 @@ import com.ekoehler.expressivecutout.data.PhoneTileSettings
 import com.ekoehler.expressivecutout.data.TimerTilePreferences
 import com.ekoehler.expressivecutout.data.TimerTileSettings
 import com.ekoehler.expressivecutout.service.CutoutNotificationListenerService
+import com.ekoehler.expressivecutout.service.ProgressData
 import com.ekoehler.expressivecutout.system.PermissionUsageMonitor
 import com.ekoehler.expressivecutout.ui.theme.ExpressiveCutoutTheme
 import kotlinx.coroutines.CoroutineScope
@@ -177,6 +181,12 @@ class IslandOverlayController(private val context: Context) {
     private val displayHeightDp: Int = (displayHeightPx / density).toInt()
 
     private val currentEvent = MutableStateFlow<IslandEvent?>(null)
+    /** Canonical persistent visual state projected from LiveActivityCoordinator slots. */
+    private val liveVisualState = MutableStateFlow(LiveActivityVisualState())
+    private val liveTransitionState = MutableStateFlow(LiveActivityVisualTransition.NONE)
+    private val liveEventCache = LinkedHashMap<String, IslandEvent>()
+    private var projectedLivePrimary: IslandEvent? = null
+    private var projectedLiveSatellite: IslandEvent? = null
 
     /**
      * The event parked in the satellite bubble beside the pill, or null when the island is whole.
@@ -366,6 +376,7 @@ class IslandOverlayController(private val context: Context) {
         observeOnCall()
         observeRunningTimer()
         observePreviewPin()
+        observeLiveActivitySlots()
         observeSignals()
         observeVisibility()
         observeMirroredKey()
@@ -490,6 +501,10 @@ class IslandOverlayController(private val context: Context) {
                 expanded = previewExpanded
                 currentEvent.value = previewEvent
                 setTouchable(false)
+            }
+            projectedLivePrimary != null -> {
+                dismissJob?.cancel()
+                applyLiveProjection()
             }
             callActive && lastCallEvent != null -> {
                 dismissJob?.cancel()
@@ -629,6 +644,7 @@ class IslandOverlayController(private val context: Context) {
                 val collapse by collapseTrigger.collectAsStateWithLifecycle()
                 val event by currentEvent.collectAsStateWithLifecycle()
                 val satellite by satelliteEvent.collectAsStateWithLifecycle()
+                val liveTransition by liveTransitionState.collectAsStateWithLifecycle()
                 val layout by layoutState.collectAsStateWithLifecycle()
                 val forced by forcedExpanded.collectAsStateWithLifecycle()
                 val behaviour by behaviourState.collectAsStateWithLifecycle()
@@ -694,6 +710,7 @@ class IslandOverlayController(private val context: Context) {
                         permissionDotsVertical = permissionDotVertical,
                         satellite = satellite,
                         satellitePosition = behaviour.satellitePosition,
+                        liveTransition = if (event?.stableId != null) liveTransition else LiveActivityVisualTransition.NONE,
                         onSatelliteClick = ::onSatellitePromote,
                         onEmptyClick = ::onEmptyClick,
                         onCenterShortcut = ::onCenterShortcut,
@@ -1036,7 +1053,8 @@ class IslandOverlayController(private val context: Context) {
     private fun isPinnedLock(): Boolean = isDeviceLocked && currentEvent.value?.id == lastLockEvent?.id
 
     /** Any live tile (music, a call, a running timer, assistant, or lock status) is currently pinned up. */
-    private fun isPinnedLiveTile(): Boolean = isPinnedMusic() || isPinnedCall() || isPinnedTimer() || isPinnedAssistant() || isPinnedLock()
+    private fun isPinnedLiveTile(): Boolean = currentEvent.value?.stableId != null ||
+        isPinnedMusic() || isPinnedCall() || isPinnedTimer() || isPinnedAssistant() || isPinnedLock()
 
     /**
      * Mirrors the island geometry, re-sizing the window as it changes so a slider drag in settings
@@ -1375,7 +1393,6 @@ class IslandOverlayController(private val context: Context) {
     private fun satelliteSplitDp(): Int {
         if (satelliteEvent.value == null) return 0
         if (expanded) return 0
-        if (currentEvent.value?.call != null) return 0
         if (isLandscapeSplitSuppressed()) return 0
         return layoutState.value.collapsed.heightDp + SATELLITE_GAP_DP
     }
@@ -1566,6 +1583,11 @@ class IslandOverlayController(private val context: Context) {
      */
     private fun onSatellitePromote() {
         val bubble = satelliteEvent.value ?: return
+        // Coordinator-owned slots cannot be reordered by the renderer; activate the satellite.
+        if (bubble.stableId != null && liveVisualState.value.satellite?.stableId == bubble.stableId) {
+            bubble.contentIntent?.let(::sendPendingIntent)
+            return
+        }
         // An app the user set to "Normal only" has no expanded state to open, so a tap opens the app
         // instead, exactly as it would on the pill, and the island is left alone.
         if (bubble.normalOnly) {
@@ -1788,6 +1810,237 @@ class IslandOverlayController(private val context: Context) {
         System.currentTimeMillis() +
             (eventDurations[type] ?: behaviourState.value.normalDurationSeconds) * 1_000L
 
+
+    /** Collects the coordinator once; it alone decides persistent primary/satellite placement. */
+    private fun observeLiveActivitySlots() = scope.launch {
+        LiveActivityRegistry.coordinator.slots.collect(::updateLiveSlots)
+    }
+
+    /** Re-projects current coordinator slots, used when richer legacy payload arrives for the same ID. */
+    private fun refreshLiveProjection() = updateLiveSlots(LiveActivityRegistry.coordinator.slots.value)
+
+    /** Applies coordinator slots without re-ranking them in the renderer. */
+    private fun updateLiveSlots(slots: LiveActivityCoordinator.Slots) {
+        val visiblePrimary = slots.primary?.takeIf(::isLiveActivityVisible)
+        val visibleSatellite = if (visiblePrimary != null) slots.satellite?.takeIf(::isLiveActivityVisible) else null
+        val visibleSlots = LiveActivityCoordinator.Slots(visiblePrimary, visibleSatellite)
+        val next = LiveActivityVisualReducer.reduce(liveVisualState.value, visibleSlots)
+        liveVisualState.value = next
+        liveTransitionState.value = next.transition
+        projectedLivePrimary = next.primary?.let(::resolveLiveActivityEvent)
+        projectedLiveSatellite = next.satellite?.let(::resolveLiveActivityEvent)
+        val activeIds = setOfNotNull(next.primary?.stableId, next.satellite?.stableId)
+        liveEventCache.keys.retainAll(activeIds)
+        if (!overlayHidden && !previewPinned) applyLiveProjection()
+    }
+
+    /** User/app filters may hide a slot, but never promote/re-rank another activity here. */
+    private fun isLiveActivityVisible(activity: LiveActivity): Boolean {
+        if (activity.packageName in disabledApps) return false
+        return when (activity.kind) {
+            LiveActivity.Kind.CALL -> tileEnabled[DynamicTile.PHONE] != false && !shouldHideForPhoneApp()
+            LiveActivity.Kind.TIMER -> tileEnabled[DynamicTile.TIMER] != false
+            LiveActivity.Kind.MUSIC -> tileEnabled[DynamicTile.MUSIC] != false && !shouldHideForPlayerApp()
+            LiveActivity.Kind.ASSISTANT -> tileEnabled[DynamicTile.ASSISTANT] != false
+            else -> true
+        }
+    }
+
+    /** Converts one neutral LiveActivity into the existing event renderer family, retaining its ID. */
+    private fun resolveLiveActivityEvent(activity: LiveActivity): IslandEvent {
+        val cached = liveEventCache[activity.stableId]
+        val render = LiveActivityRenderAdapter.adapt(activity)
+        val packageName = activity.packageName.orEmpty()
+        val cutoutActions = activity.actions.mapNotNull { action ->
+            val intent = action.intent ?: return@mapNotNull null
+            CutoutSignal.Notification.Action(action.label, intent)
+        }
+        val progress = activity.progress?.let {
+            ProgressData(
+                max = it.max.coerceAtLeast(0),
+                current = if (it.max > 0) it.current.coerceIn(0, it.max) else it.current.coerceAtLeast(0),
+                isIndeterminate = it.isIndeterminate,
+                title = activity.title,
+            )
+        }
+        val signal: CutoutSignal = when (render.renderKind) {
+            LiveActivityRenderKind.CALL -> CutoutSignal.Call(
+                packageName = packageName,
+                callerLabel = activity.title ?: activity.appName.orEmpty(),
+                key = activity.notificationKey,
+                contentIntent = activity.contentIntent,
+                actions = cutoutActions,
+                ongoing = activity.phase != "incoming",
+            )
+            LiveActivityRenderKind.TIMER -> CutoutSignal.Timer(
+                packageName = packageName,
+                label = activity.title,
+                key = activity.notificationKey,
+                contentIntent = activity.contentIntent,
+                actions = cutoutActions,
+            )
+            LiveActivityRenderKind.MUSIC -> CutoutSignal.Music(
+                packageName = packageName,
+                title = activity.title,
+                artist = activity.subtitle,
+                contentIntent = activity.contentIntent,
+            )
+            LiveActivityRenderKind.GENERIC_PROGRESS,
+            LiveActivityRenderKind.GENERIC_LIVE -> CutoutSignal.Notification(
+                packageName = packageName,
+                title = activity.title,
+                text = activity.subtitle ?: activity.phase,
+                appName = activity.appName,
+                key = activity.notificationKey,
+                contentIntent = activity.contentIntent,
+                actions = cutoutActions,
+                progressData = progress,
+            )
+        }
+        val autoExpand = when (render.renderKind) {
+            LiveActivityRenderKind.MUSIC -> musicSettings.expandOnPlay
+            LiveActivityRenderKind.CALL,
+            LiveActivityRenderKind.TIMER -> false
+            else -> behaviourState.value.notificationsAutoExpand
+        }
+        val normalOnly = activity.packageName in normalOnlyApps
+        val freshlyResolved = resolver.resolve(
+            signal = signal,
+            customIcons = customIcons,
+            musicSettings = musicSettings,
+            phoneSettings = phoneSettings,
+            timerSettings = timerSettings,
+            assistantSettings = assistantSettings,
+            dynamicEventColor = eventDynamicColor,
+            dynamicEventColorRole = eventDynamicColorRole,
+            dynamicEventColorOpacity = eventDynamicColorOpacity,
+            animatedIconEnabled = eventAnimatedIcons,
+            animatedIconLoop = eventAnimatedIconLoops,
+            eventColorOverrides = eventColors,
+            preferDynamicIconColor = appearanceState.value.preferDynamicIconColor,
+        )
+        val resolved = freshlyResolved.copy(
+            id = cached?.id ?: freshlyResolved.id,
+            initiallyExpanded = autoExpand,
+            normalOnly = normalOnly,
+            stableId = activity.stableId,
+            label = activity.title?.takeIf { it.isNotBlank() }
+                ?: activity.appName?.takeIf { it.isNotBlank() }
+                ?: signalLabel(signal),
+            detail = activity.subtitle ?: activity.phase,
+            appName = activity.appName,
+            contentIntent = activity.contentIntent,
+            notificationKey = activity.notificationKey,
+            progressData = progress,
+            secondaryLines = activity.phase?.takeIf { it != activity.subtitle && it != activity.title }?.let(::listOf)
+                ?: emptyList(),
+        )
+        val finalEvent = if (cached != null) resolved.copy(icon = cached.icon, appColor = cached.appColor) else resolved
+        liveEventCache[activity.stableId] = finalEvent
+        return finalEvent
+    }
+
+    /** Fallback label used only when the neutral source supplied no title/app name. */
+    private fun signalLabel(signal: CutoutSignal): String = when (signal) {
+        is CutoutSignal.Music -> signal.title ?: context.getString(DynamicTile.MUSIC.labelRes)
+        is CutoutSignal.Call -> signal.callerLabel
+        is CutoutSignal.Timer -> signal.label ?: context.getString(DynamicTile.TIMER.labelRes)
+        is CutoutSignal.Notification -> signal.title ?: signal.appName ?: "Live activity"
+        is CutoutSignal.Assistant -> signal.title ?: "Assistant"
+        is CutoutSignal.System -> context.getString(signal.type.labelRes)
+    }
+
+    /** Shows the canonical live slots, temporarily leaving a transient legacy event on top when safe. */
+    private fun applyLiveProjection() {
+        val primary = projectedLivePrimary
+        val secondary = projectedLiveSatellite
+        val current = currentEvent.value
+        val transientOnTop = current != null && current.stableId == null
+        val callMustLead = liveVisualState.value.primary?.kind == LiveActivity.Kind.CALL
+        val splitAllowed = behaviourState.value.splitIslandEnabled &&
+            !isLandscapeSplitSuppressed() && satelliteFitsWidth()
+
+        satelliteDismissJob?.cancel()
+        if (transientOnTop && !callMustLead) {
+            if (satelliteEvent.value?.stableId != null || primary != null) {
+                satelliteEvent.value = if (splitAllowed) primary else null
+                satelliteDeadlineMs = null
+                satelliteSystemEventType = null
+            }
+            syncWindowSize()
+            return
+        }
+
+        dismissJob?.cancel()
+        currentDeadlineMs = null
+        satelliteDeadlineMs = null
+        currentSystemEventType = null
+        satelliteSystemEventType = null
+        currentEvent.value = primary
+        satelliteEvent.value = if (splitAllowed) secondary else null
+        if (primary == null) {
+            forcedExpanded.value = null
+            expanded = false
+        }
+        syncWindowSize()
+    }
+
+    /** Finds whether a legacy signal is merely richer payload for an already canonical activity. */
+    private fun matchingLiveActivity(signal: CutoutSignal): LiveActivity? {
+        val activities = LiveActivityRegistry.coordinator.state.value
+        return when (signal) {
+            is CutoutSignal.Call -> activities.firstOrNull {
+                it.kind == LiveActivity.Kind.CALL && it.packageName == signal.packageName &&
+                    (signal.key == null || it.notificationKey == signal.key)
+            }
+            is CutoutSignal.Timer -> activities.firstOrNull {
+                it.kind == LiveActivity.Kind.TIMER && it.packageName == signal.packageName &&
+                    (signal.key == null || it.notificationKey == signal.key)
+            }
+            is CutoutSignal.Music -> activities.firstOrNull {
+                it.kind == LiveActivity.Kind.MUSIC && it.packageName == signal.packageName
+            }
+            is CutoutSignal.Notification -> activities.firstOrNull {
+                it.notificationKey != null && it.notificationKey == signal.key && it.packageName == signal.packageName
+            }
+            is CutoutSignal.Assistant -> activities.firstOrNull {
+                it.kind == LiveActivity.Kind.ASSISTANT && it.packageName == signal.packageName
+            }
+            is CutoutSignal.System -> null
+        }
+    }
+
+    /** Enriches a canonical activity from the legacy producer without letting that producer schedule it. */
+    private fun absorbCanonicalSignal(signal: CutoutSignal, resolved: IslandEvent, activity: LiveActivity) {
+        val cached = liveEventCache[activity.stableId]
+        val enriched = resolved.copy(
+            id = cached?.id ?: resolved.id,
+            stableId = activity.stableId,
+            initiallyExpanded = cached?.initiallyExpanded ?: resolved.initiallyExpanded,
+        )
+        liveEventCache[activity.stableId] = enriched
+        when (signal) {
+            is CutoutSignal.Music -> {
+                musicPlaying = true
+                lastMusicEvent = enriched
+            }
+            is CutoutSignal.Call -> {
+                callActive = true
+                lastCallEvent = enriched
+            }
+            is CutoutSignal.Timer -> {
+                timerActive = true
+                lastTimerEvent = enriched
+            }
+            is CutoutSignal.Assistant -> {
+                assistantActive = signal.active
+                lastAssistantEvent = enriched
+            }
+            else -> Unit
+        }
+        refreshLiveProjection()
+    }
+
     /**
      * The single consumer of [IslandEventBus]: turns each signal into a pill or a live tile,
      * honouring the per-event and per-tile switches the user set.
@@ -1854,6 +2107,20 @@ class IslandOverlayController(private val context: Context) {
                 eventColorOverrides = eventColors,
                 preferDynamicIconColor = appearanceState.value.preferDynamicIconColor,
             ).copy(initiallyExpanded = autoExpand, normalOnly = normalOnly)
+
+            val canonicalActivity = matchingLiveActivity(signal)
+            if (canonicalActivity != null) {
+                absorbCanonicalSignal(signal, resolvedEvent, canonicalActivity)
+                return@collect
+            }
+
+            // A live call, or an already full persistent pair, cannot be displaced by a transient.
+            val liveSlots = liveVisualState.value
+            if (liveSlots.primary?.kind == LiveActivity.Kind.CALL || liveSlots.satellite != null) {
+                if (signal !is CutoutSignal.Call && signal !is CutoutSignal.Music && signal !is CutoutSignal.Timer) {
+                    return@collect
+                }
+            }
 
             if (overlayHidden) {
                 if (behaviourState.value.cutoutEnabled) {
@@ -1984,6 +2251,11 @@ class IslandOverlayController(private val context: Context) {
             (behaviourState.value.horizontalCutoutMode == HorizontalCutoutMode.NORMAL_ONLY ||
              behaviourState.value.horizontalCutoutMode == HorizontalCutoutMode.STICK_TO_CAMERA)
         val targetExpanded = if (isNoExpandLandscape) false else isExpanded
+        if (currentEvent.value?.stableId != null) {
+            val next = LiveActivityVisualReducer.setExpanded(liveVisualState.value, targetExpanded)
+            liveVisualState.value = next
+            liveTransitionState.value = next.transition
+        }
         // The resting empty pill's "center" has no event to dismiss — just keep the window and
         // touchable region sized to whatever it's showing (collapsed pill vs. expanded grid).
         if (currentEvent.value == null) {
@@ -2180,6 +2452,12 @@ class IslandOverlayController(private val context: Context) {
         // Whatever is parked in the bubble is already visible, so slide it into the pill rather than
         // clearing the island and waiting out the usual return delay, which would read as a stutter.
         if (promoteSatelliteCollapsed()) return
+        projectedLivePrimary?.let { live ->
+            currentEvent.value = live
+            satelliteEvent.value = projectedLiveSatellite
+            syncWindowSize()
+            return
+        }
         val returnToLive = livePillToReturnTo() != null
         currentEvent.value = null
         syncWindowSize()
@@ -2211,7 +2489,8 @@ class IslandOverlayController(private val context: Context) {
 
     /** Whether [event] is one of the live tiles, in whichever slot it happens to sit. */
     private fun isLiveTileEvent(event: IslandEvent?): Boolean = event?.let {
-        it.media != null || it.call != null || it.timer != null || (isDeviceLocked && it.id == lastLockEvent?.id)
+        it.stableId != null || it.media != null || it.call != null || it.timer != null ||
+            (isDeviceLocked && it.id == lastLockEvent?.id)
     } == true
 
     /**

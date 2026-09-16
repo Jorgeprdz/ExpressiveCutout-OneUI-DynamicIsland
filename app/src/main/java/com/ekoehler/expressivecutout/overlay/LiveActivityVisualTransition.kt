@@ -1,7 +1,7 @@
 package com.ekoehler.expressivecutout.overlay
 
 /** Identity-level transition between two coordinator slot snapshots. */
-internal enum class LiveActivityVisualTransition {
+enum class LiveActivityVisualTransition {
     NONE,
     REVEAL,
     HIDE,

@@ -443,6 +443,7 @@ fun DynamicIsland(
     /** The event the pill displaced, shown in a bubble beside it, or null when the island is whole. */
     satellite: IslandEvent? = null,
     satellitePosition: SatellitePosition = SatellitePosition.RIGHT,
+    liveTransition: LiveActivityVisualTransition = LiveActivityVisualTransition.NONE,
     onSatelliteClick: () -> Unit = {},
     onEmptyClick: () -> Unit = {},
     onCenterShortcut: (CenterShortcut) -> Unit = {},
@@ -459,14 +460,15 @@ fun DynamicIsland(
     }
 
     val shownEvent = lastEvent
+    val shownIdentity = shownEvent?.visualIdentity
     val emptyPill = event == null && showsWhenEmpty
 
     val initialExpandedState = if (forcedExpanded == false) false else (shownEvent?.initiallyExpanded ?: false)
-    var tapExpanded by remember(shownEvent?.id, forcedExpanded) { mutableStateOf(initialExpandedState) }
+    var tapExpanded by remember(shownIdentity, forcedExpanded) { mutableStateOf(initialExpandedState) }
     var centerInteraction by remember { mutableStateOf(0) }
-    var replyingTo by remember(shownEvent?.id) { mutableStateOf<IslandAction?>(null) }
+    var replyingTo by remember(shownIdentity) { mutableStateOf<IslandAction?>(null) }
     val replying = replyingTo != null
-    var sentReply by remember(shownEvent?.id) { mutableStateOf<Pair<IslandAction, String>?>(null) }
+    var sentReply by remember(shownIdentity) { mutableStateOf<Pair<IslandAction, String>?>(null) }
     val confirmingSent = sentReply != null
     val isCall = shownEvent?.call != null
     val isAssistantNormalOnly = shownEvent?.assistant != null && !shownEvent.assistant.displayAnswerInCutout
@@ -482,7 +484,7 @@ fun DynamicIsland(
     val boopScale = remember { Animatable(1f) }
     val pressExpand = remember { Animatable(0f) }
     val pressWidens = actionButtonAnimation == ActionButtonAnimation.EXPAND
-    val dismissOffsetX = remember(shownEvent?.id) { Animatable(0f) }
+    val dismissOffsetX = remember(shownIdentity) { Animatable(0f) }
     val scope = rememberCoroutineScope()
 
     val animScale = animationDurationMs / BASE_TRANSITION_MS.toFloat()
@@ -548,14 +550,14 @@ fun DynamicIsland(
     }
 
     var assistantContentHeightDp by remember(shownEvent?.assistant != null) { mutableStateOf(0) }
-    var expandedNotificationHeightDp by remember(shownEvent?.id) { mutableStateOf(0) }
+    var expandedNotificationHeightDp by remember(shownIdentity) { mutableStateOf(0) }
     var centerContentHeightDp by remember { mutableStateOf(0) }
     val screenHeightDp = LocalConfiguration.current.screenHeightDp
 
     val textMeasurer = rememberTextMeasurer()
     val textDensity = LocalDensity.current
     val precomputedNotificationHeightDp = remember(
-        shownEvent?.id,
+        shownIdentity,
         shownEvent?.label,
         shownEvent?.detail,
         shownEvent?.progressData,
@@ -652,18 +654,21 @@ fun DynamicIsland(
     LaunchedEffect(present) {
         reveal.animateTo(
             targetValue = if (present) 1f else 0f,
-            animationSpec = motion.float(baseMs = if (present) 320 else 200),
+            animationSpec = motion.float(
+                baseMs = if (present) 320 else 200,
+                direction = if (present) IslandTransitionDirection.ENTER else IslandTransitionDirection.EXIT,
+            ),
         )
     }
 
-    // The normal cutout's icon pops in whenever a new event takes the pill over. What counts as
-    // "new" is deliberately not the event id: a live tile re-resolves on every refresh (a media
-    // progress tick, a timer second) and gets a fresh id each time, which would re-pop constantly.
-    // A notification's key survives its own updates, and a tile's label survives its lifetime.
+    // Arrival animation keys strictly on stable visual identity, never mutable labels/progress.
     val iconPop = remember { Animatable(1f) }
-    val iconPopKey = event?.let { it.notificationKey ?: it.label }
-    LaunchedEffect(iconPopKey) {
-        if (iconPopKey != null) motion.popIn(iconPop)
+    val iconPopKey = event?.visualIdentity
+    LaunchedEffect(iconPopKey, liveTransition) {
+        val liveArrival = event?.stableId == null || liveTransition == LiveActivityVisualTransition.REVEAL ||
+            liveTransition == LiveActivityVisualTransition.REPLACE_PRIMARY ||
+            liveTransition == LiveActivityVisualTransition.DEMOTE_PRIMARY_TO_SATELLITE
+        if (iconPopKey != null && liveArrival) motion.popIn(iconPop)
     }
 
     LaunchedEffect(emptyPill) {
@@ -672,17 +677,23 @@ fun DynamicIsland(
             if (dismissOffsetX.value != 0f) {
                 reveal.snapTo(0f)
                 dismissOffsetX.snapTo(0f)
-                reveal.animateTo(1f, animationSpec = motion.float(baseMs = 320))
+                reveal.animateTo(1f, animationSpec = motion.float(baseMs = 320, direction = IslandTransitionDirection.ENTER))
             }
         }
     }
 
-    val spec: AnimationSpec<Dp> = if (reveal.value == 0f || snapGeometry) snap() else motion.dp()
+    val geometryDirection = when (liveTransition) {
+        LiveActivityVisualTransition.PROMOTE_SATELLITE -> IslandTransitionDirection.PROMOTE
+        LiveActivityVisualTransition.DEMOTE_PRIMARY_TO_SATELLITE -> IslandTransitionDirection.DEMOTE
+        LiveActivityVisualTransition.HIDE -> IslandTransitionDirection.EXIT
+        else -> if (isExpanded) IslandTransitionDirection.EXPAND else IslandTransitionDirection.COLLAPSE
+    }
+    val spec: AnimationSpec<Dp> = if (reveal.value == 0f || snapGeometry) snap() else motion.dp(geometryDirection)
     val isAssistantAnswer = isExpanded && shownEvent?.assistant?.displayAnswerInCutout == true
     val isDynamicHeight = isAssistantAnswer || (isExpanded && (precomputedNotificationHeightDp > 0 || expandedNotificationHeightDp > 0))
     val heightSpec: AnimationSpec<Dp> = when {
         reveal.value == 0f || snapGeometry -> snap()
-        isDynamicHeight -> motion.dpSmooth()
+        isDynamicHeight -> motion.dpSmooth(geometryDirection)
         else -> spec
     }
 
@@ -713,7 +724,7 @@ fun DynamicIsland(
     // pill gives up the bubble's diameter plus the gap, and the two together still span exactly the
     // width the user chose. Both the width and the offset below animate, so the pill visibly makes
     // room rather than jumping.
-    val satelliteSharing = satellite != null && !isExpanded && !isCall && !isStickToCamera
+    val satelliteSharing = satellite != null && !isExpanded && !isStickToCamera
     val satelliteSplitDp = if (satelliteSharing) collapsed.heightDp + SATELLITE_GAP_DP else 0
     // The pair stays centred on the span the pill had to itself, so the pill's own centre steps away
     // from the side the bubble takes by half of what it gave up.
@@ -764,7 +775,7 @@ fun DynamicIsland(
     val revealBottomRight = lerpDp(dotCorner, bottomRight, reveal.value)
 
     // The bubble is hidden whenever the expanded card is up (it would claim the same room), during a
-    // call (the call cutout fills its own trailing edge) and when stuck to the camera. Kept in a
+    // expanded card is up or when stuck to the camera. Calls may keep a compact music satellite. Kept in a
     // remembered slot like the pill's own event so it can animate out after being cleared.
     var lastSatellite by remember { mutableStateOf<IslandEvent?>(null) }
     if (satellite != null) lastSatellite = satellite
@@ -773,7 +784,11 @@ fun DynamicIsland(
     LaunchedEffect(satelliteShown) {
         satelliteReveal.animateTo(
             targetValue = if (satelliteShown) 1f else 0f,
-            animationSpec = motion.float(baseMs = if (satelliteShown) 320 else 200),
+            animationSpec = motion.float(
+                baseMs = if (satelliteShown) 320 else 200,
+                direction = if (satelliteShown) IslandTransitionDirection.SATELLITE_ENTER
+                else IslandTransitionDirection.SATELLITE_EXIT,
+            ),
         )
     }
 
