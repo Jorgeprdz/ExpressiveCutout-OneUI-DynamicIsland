@@ -27,8 +27,56 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
+      - name: Normalize patch base
+        shell: bash
+        run: |
+          git show cf4abaae76ad5ccee119380e3348eab3e5840621:app/src/main/java/com/ekoehler/expressivecutout/overlay/IslandEvent.kt \
+            > app/src/main/java/com/ekoehler/expressivecutout/overlay/IslandEvent.kt
+
       - name: Apply exact renderer patch
         run: python3 .github/scripts/apply_live_renderer.py
+
+      - name: Repair exact compile issues from staged patch
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          motion = Path("app/src/main/java/com/ekoehler/expressivecutout/overlay/IslandMotion.kt")
+          text = motion.read_text()
+          if "import androidx.compose.animation.core.VisibilityThreshold\n" not in text:
+              text = text.replace(
+                  "import androidx.compose.animation.core.CubicBezierEasing\n",
+                  "import androidx.compose.animation.core.CubicBezierEasing\n"
+                  "import androidx.compose.animation.core.VisibilityThreshold\n",
+                  1,
+              )
+          motion.write_text(text)
+
+          transition = Path("app/src/main/java/com/ekoehler/expressivecutout/overlay/LiveActivityVisualTransition.kt")
+          text = transition.read_text().replace(
+              "internal enum class LiveActivityVisualTransition",
+              "enum class LiveActivityVisualTransition",
+              1,
+          )
+          transition.write_text(text)
+
+          controller = Path("app/src/main/java/com/ekoehler/expressivecutout/overlay/IslandOverlayController.kt")
+          text = controller.read_text()
+          marker = "    private fun resolveLiveActivityEvent(activity: LiveActivity): IslandEvent {"
+          prefix, suffix = text.split(marker, 1)
+          prefix = prefix.replace(
+              "        val freshlyResolved = resolver.resolve(\n",
+              "        val resolved = resolver.resolve(\n",
+              1,
+          )
+          suffix = suffix.replace(
+              "        val resolved = resolver.resolve(\n",
+              "        val freshlyResolved = resolver.resolve(\n",
+              1,
+          )
+          controller.write_text(prefix + marker + suffix)
+          PY
 
       - name: Verify unit tests before commit
         run: ./gradlew testDebugUnitTest --no-daemon
