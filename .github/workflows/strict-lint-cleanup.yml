@@ -77,7 +77,7 @@ jobs:
           ! grep -R --include='*.kt' -n 'delay(2500\|delay(2_500' app/src/main/java/com/ekoehler/expressivecutout/overlay/LiveActivityPulseDetector.kt app/src/main/java/com/ekoehler/expressivecutout/system/StatusBarIconController.kt app/src/main/java/com/ekoehler/expressivecutout/system/StatusBarPulseDeadline.kt
           ! grep -R --include='*.kt' -n 'requestPermission(' app/src/main/java/com/ekoehler/expressivecutout/overlay/LiveActivityPulseDetector.kt app/src/main/java/com/ekoehler/expressivecutout/system/StatusBarIconController.kt
 
-      - name: Wait for sibling Build before final push
+      - name: Wait for sibling Build before production push
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -93,14 +93,18 @@ jobs:
             fi
             sleep 5
           done
-          echo "Sibling Build did not complete in polling window" >&2
           exit 1
 
-      - name: Commit verified cleanup
+      - name: Commit verified production fixes only
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # The patch script also makes the persistent Build workflow strict, but the runner token
+          # cannot publish workflow-file changes. Restore it here; the connected GitHub tool will
+          # harden build.yml separately after this verified production push.
+          git restore .github/workflows/build.yml
 
           git add app/src/main/AndroidManifest.xml app/src/main/java/com/ekoehler/expressivecutout/events/SystemEventMonitor.kt
           git commit -m "[FIX] guard bluetooth access behind runtime permission"
@@ -113,17 +117,11 @@ jobs:
             app/src/main/java/com/ekoehler/expressivecutout/ui/MainScreen.kt
           git commit -m "[FIX] resolve compose lint correctness errors"
 
-          git add .github/workflows/build.yml
-          git commit -m "[FIX] enforce lint failures in build"
-
-          git rm .github/scripts/fix_lint_debt.py .github/workflows/strict-lint-cleanup.yml
-          git commit -m "[CHORE] remove lint cleanup helper"
-
-          git diff --check HEAD~4..HEAD
+          git diff --check HEAD~2..HEAD
           git push origin HEAD:feature/live-activities-dynamic-island
-          echo "FINAL_HEAD=$(git rev-parse HEAD)"
+          echo "PRODUCTION_HEAD=$(git rev-parse HEAD)"
 
-      - name: Wait for strict final Build
+      - name: Wait for production Build
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -134,13 +132,12 @@ jobs:
             run_id="$(jq -r '.workflow_runs[0].id // ""' <<<"$data")"
             status="$(jq -r '.workflow_runs[0].status // "missing"' <<<"$data")"
             conclusion="$(jq -r '.workflow_runs[0].conclusion // ""' <<<"$data")"
-            echo "FINAL_BUILD_RUN=$run_id STATUS=$status CONCLUSION=$conclusion"
+            echo "PRODUCTION_BUILD_RUN=$run_id STATUS=$status CONCLUSION=$conclusion"
             if [ "$status" = "completed" ]; then
               test "$conclusion" = "success"
-              echo "FULL_GREEN_RUN=$run_id"
+              echo "PRODUCTION_BUILD_GREEN=$run_id"
               exit 0
             fi
             sleep 5
           done
-          echo "Final strict Build did not complete in polling window" >&2
           exit 1
