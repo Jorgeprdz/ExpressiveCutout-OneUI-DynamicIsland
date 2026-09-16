@@ -3,6 +3,7 @@ package com.ekoehler.expressivecutout.notifications.live
 import com.ekoehler.expressivecutout.core.live.LiveActivity
 import com.ekoehler.expressivecutout.core.live.LiveActivityUpdate
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -98,7 +99,8 @@ class NotificationLiveActivityProcessorTest {
         val updateId = (update.update as LiveActivityUpdate.Upsert).activity.stableId
         assertEquals(firstId, updateId)
         assertEquals("notification:com.example:key-1:1000", firstId)
-        assertTrue(first.preserveLegacyPresentation)
+        assertFalse(first.preserveLegacyPresentation)
+        assertFalse(update.preserveLegacyPresentation)
     }
 
     @Test
