@@ -2,7 +2,10 @@ package com.ekoehler.expressivecutout.overlay
 
 import com.ekoehler.expressivecutout.core.live.LiveActivity
 
-/** Renderer-facing snapshot derived directly from the coordinator's primary and satellite slots. */
+/**
+ * Renderer-facing snapshot derived directly from the coordinator's authoritative primary and
+ * satellite slots. This type describes presentation only and never re-ranks activities.
+ */
 internal data class LiveActivityVisualState(
     val primary: LiveActivity? = null,
     val satellite: LiveActivity? = null,
