@@ -18,18 +18,18 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: feature/live-activities-dynamic-island
-          fetch-depth: 2
+          fetch-depth: 0
 
-      - name: Guard branch and base
+      - name: Guard branch and ancestry
         shell: bash
         run: |
           set -euo pipefail
+          BASE=76ee9db4ed1217cd6a4035b8c3f74b85d4850e9c
           echo "BRANCH=$(git branch --show-current)"
           echo "HEAD=$(git rev-parse HEAD)"
-          echo "PARENT=$(git rev-parse HEAD^)"
           git status --short
           test "$(git branch --show-current)" = "feature/live-activities-dynamic-island"
-          test "$(git rev-parse HEAD^)" = "76ee9db4ed1217cd6a4035b8c3f74b85d4850e9c"
+          git merge-base --is-ancestor "$BASE" HEAD
           test -z "$(git status --porcelain)"
 
       - name: Add focused regression expectations first
@@ -38,31 +38,13 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
-
           path = Path("app/src/test/java/com/ekoehler/expressivecutout/overlay/IslandEventVisualIdentityTest.kt")
           text = path.read_text()
-          old = '''        assertEquals(first.visualIdentity, updated.visualIdentity)
-              }
-
-              @Test
-              fun `legacy notification key survives renderer id updates`() {'''
-          new = '''        assertEquals(first.visualIdentity, updated.visualIdentity)
-                  assertEquals(primaryContentKey(first), primaryContentKey(updated))
-              }
-
-              @Test
-              fun `different live stable ids use different primary content keys`() {
-                  val music = event(id = 1L, label = "Track", stableId = "music:spotify:sessionA")
-                  val call = event(id = 2L, label = "Caller", stableId = "call:dialer:key")
-
-                  assertNotEquals(primaryContentKey(music), primaryContentKey(call))
-              }
-
-              @Test
-              fun `legacy notification key survives renderer id updates`() {'''
-          if text.count(old) != 1:
+          anchor = "        assertEquals(first.visualIdentity, updated.visualIdentity)\n    }\n\n    @Test\n    fun `legacy notification key survives renderer id updates`() {"
+          replacement = "        assertEquals(first.visualIdentity, updated.visualIdentity)\n        assertEquals(primaryContentKey(first), primaryContentKey(updated))\n    }\n\n    @Test\n    fun `different live stable ids use different primary content keys`() {\n        val music = event(id = 1L, label = \"Track\", stableId = \"music:spotify:sessionA\")\n        val call = event(id = 2L, label = \"Caller\", stableId = \"call:dialer:key\")\n\n        assertNotEquals(primaryContentKey(music), primaryContentKey(call))\n    }\n\n    @Test\n    fun `legacy notification key survives renderer id updates`() {"
+          if text.count(anchor) != 1:
               raise SystemExit("Expected visual identity test anchor exactly once")
-          path.write_text(text.replace(old, new, 1))
+          path.write_text(text.replace(anchor, replacement, 1))
           PY
 
       - name: TDD red - content key policy must not exist yet
@@ -91,28 +73,12 @@ jobs:
           helper = Path("app/src/main/java/com/ekoehler/expressivecutout/overlay/PrimaryContentTransition.kt")
           if helper.exists():
               raise SystemExit("PrimaryContentTransition.kt already exists unexpectedly")
-          helper.write_text('''package com.ekoehler.expressivecutout.overlay
-
-/**
- * Stable key for primary content handoffs. Mutable metadata stays on the same key, while a genuine
- * visual identity replacement gets a new key and therefore a short content transition.
- */
-internal fun primaryContentKey(event: IslandEvent?): String? = event?.visualIdentity
-''')
+          helper.write_text("package com.ekoehler.expressivecutout.overlay\n\n/**\n * Stable key for primary content handoffs. Mutable metadata stays on the same key, while a genuine\n * visual identity replacement gets a new key and therefore a short content transition.\n */\ninternal fun primaryContentKey(event: IslandEvent?): String? = event?.visualIdentity\n")
 
           path = Path("app/src/main/java/com/ekoehler/expressivecutout/overlay/DynamicIsland.kt")
           text = path.read_text()
-
-          old_imports = '''import androidx.compose.animation.AnimatedVisibility
-          import androidx.compose.animation.Crossfade
-'''
-          new_imports = '''import androidx.compose.animation.AnimatedContent
-          import androidx.compose.animation.AnimatedVisibility
-          import androidx.compose.animation.Crossfade
-          import androidx.compose.animation.fadeIn
-          import androidx.compose.animation.fadeOut
-          import androidx.compose.animation.togetherWith
-'''
+          old_imports = "import androidx.compose.animation.AnimatedVisibility\nimport androidx.compose.animation.Crossfade\n"
+          new_imports = "import androidx.compose.animation.AnimatedContent\nimport androidx.compose.animation.AnimatedVisibility\nimport androidx.compose.animation.Crossfade\nimport androidx.compose.animation.fadeIn\nimport androidx.compose.animation.fadeOut\nimport androidx.compose.animation.togetherWith\n"
           if text.count(old_imports) != 1:
               raise SystemExit("Expected animation import anchor exactly once")
           text = text.replace(old_imports, new_imports, 1)
@@ -134,24 +100,22 @@ internal fun primaryContentKey(event: IslandEvent?): String? = event?.visualIden
           block = block.replace('shownEvent?.let { e ->', 'contentEvent?.let { e ->', 1)
           if block.count('iconPop = iconPop,') != 1:
               raise SystemExit("Expected iconPop renderer binding exactly once in primary block")
-          block = block.replace(
-              'iconPop = iconPop,',
-              'iconPop = if (e.visualIdentity == shownIdentity) iconPop else null,',
-              1,
-          )
+          block = block.replace('iconPop = iconPop,', 'iconPop = if (e.visualIdentity == shownIdentity) iconPop else null,', 1)
           indented_block = '\n'.join(('    ' + line) if line else line for line in block.split('\n'))
-          wrapper = '''                    AnimatedContent(
-                        targetState = shownEvent,
-                        transitionSpec = {
-                            fadeIn(animationSpec = tween(scaled(150))) togetherWith
-                                fadeOut(animationSpec = tween(scaled(150)))
-                        },
-                        contentKey = ::primaryContentKey,
-                        label = "islandPrimaryIdentityContent",
-                    ) { contentEvent ->
-''' + indented_block + '''
-                    }'''
-          text = text[:start] + wrapper + text[end:]
+          wrapper_lines = [
+              '                    AnimatedContent(',
+              '                        targetState = shownEvent,',
+              '                        transitionSpec = {',
+              '                            fadeIn(animationSpec = tween(scaled(150))) togetherWith',
+              '                                fadeOut(animationSpec = tween(scaled(150)))',
+              '                        },',
+              '                        contentKey = ::primaryContentKey,',
+              '                        label = "islandPrimaryIdentityContent",',
+              '                    ) { contentEvent ->',
+              indented_block,
+              '                    }',
+          ]
+          text = text[:start] + '\n'.join(wrapper_lines) + text[end:]
           path.write_text(text)
           PY
 
@@ -174,13 +138,16 @@ internal fun primaryContentKey(event: IslandEvent?): String? = event?.visualIden
         shell: bash
         run: |
           set -euo pipefail
+          git add -A
           echo '===== STATUS ====='
           git status --short
           echo '===== DIFF STAT ====='
-          git diff --stat
+          git diff --cached --stat
           echo '===== DIFF ====='
-          git diff -- app/src/main/java/com/ekoehler/expressivecutout/overlay/DynamicIsland.kt app/src/main/java/com/ekoehler/expressivecutout/overlay/PrimaryContentTransition.kt app/src/test/java/com/ekoehler/expressivecutout/overlay/IslandEventVisualIdentityTest.kt .github/workflows/primary-identity-patch.yml
-          test "$(git diff --name-only | sort)" = "$(printf '%s\n' '.github/workflows/primary-identity-patch.yml' 'app/src/main/java/com/ekoehler/expressivecutout/overlay/DynamicIsland.kt' 'app/src/main/java/com/ekoehler/expressivecutout/overlay/PrimaryContentTransition.kt' 'app/src/test/java/com/ekoehler/expressivecutout/overlay/IslandEventVisualIdentityTest.kt' | sort)"
+          git diff --cached -- app/src/main/java/com/ekoehler/expressivecutout/overlay/DynamicIsland.kt app/src/main/java/com/ekoehler/expressivecutout/overlay/PrimaryContentTransition.kt app/src/test/java/com/ekoehler/expressivecutout/overlay/IslandEventVisualIdentityTest.kt .github/workflows/primary-identity-patch.yml
+          actual="$(git diff --cached --name-only | sort)"
+          expected="$(printf '%s\n' '.github/workflows/primary-identity-patch.yml' 'app/src/main/java/com/ekoehler/expressivecutout/overlay/DynamicIsland.kt' 'app/src/main/java/com/ekoehler/expressivecutout/overlay/PrimaryContentTransition.kt' 'app/src/test/java/com/ekoehler/expressivecutout/overlay/IslandEventVisualIdentityTest.kt' | sort)"
+          test "$actual" = "$expected"
 
       - name: Commit validated tree
         shell: bash
@@ -190,7 +157,6 @@ internal fun primaryContentKey(event: IslandEvent?): String? = event?.visualIden
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
           git commit -m "[FIX] animate primary live activity identity transitions"
           echo "VALIDATED_COMMIT=$(git rev-parse HEAD)"
           git push origin "HEAD:${BRANCH}"
