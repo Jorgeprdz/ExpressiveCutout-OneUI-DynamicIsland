@@ -22,8 +22,8 @@ private const val DISABLE_SYSTEM_INFO = 0x00100000
 private const val DISABLE_CLOCK = 0x00800000
 
 /**
- * Hides the system status bar's notification icons through Shizuku, so the island is the only thing
- * reporting notifications.
+ * Hides selected system status-bar elements through Shizuku while composing transient effects over
+ * the user's persistent wishes.
  *
  * The call itself is `IStatusBarService.disable`, which needs `android.permission.STATUS_BAR` — a
  * privileged permission we can never hold, but shell does, which is what Shizuku lends us.
@@ -40,10 +40,24 @@ private const val DISABLE_CLOCK = 0x00800000
  */
 object StatusBarIconController {
 
+    /** The one process-lifetime status-bar client identity, reused for persistent and transient flags. */
     private val token = Binder()
 
+    /** Cached Shizuku-backed framework proxy, invalidated whenever the bridge becomes unavailable. */
     @Volatile
     private var service: Any? = null
+
+    /** Last user wish observed from DataStore; transient pulse state is never persisted into it. */
+    @Volatile
+    private var persistentFlags = StatusBarFlagState()
+
+    /** In-memory notification-icon suppression layered over [persistentFlags]. */
+    @Volatile
+    private var transientHideNotificationIcons = false
+
+    /** Package identity supplied to `IStatusBarService.disable`, seeded once from [start]. */
+    @Volatile
+    private var applicationPackageName: String? = null
 
     /**
      * Keeps the system status bar in sync with the saved wish, re-applying whenever Shizuku becomes
@@ -56,7 +70,7 @@ object StatusBarIconController {
      */
     fun start(context: Context, scope: CoroutineScope) {
         val preferences = StatusBarPreferences(context)
-        val packageName = context.packageName
+        applicationPackageName = context.packageName
         scope.launch {
             combine(
                 preferences.hideNotificationIcons,
@@ -68,43 +82,103 @@ object StatusBarIconController {
                 Wish(hideIcons, hideSystemInfo, hideClock, silenceAlerts, status)
             }
                 .collect { wish ->
+                    updatePersistentFlags(
+                        StatusBarFlagState(
+                            hideNotificationIcons = wish.hideIcons,
+                            hideSystemInfo = wish.hideSystemInfo,
+                            hideClock = wish.hideClock,
+                            silenceAlerts = wish.silenceAlerts,
+                        ),
+                    )
                     if (wish.status != ShizukuStatus.READY) {
                         // A dead Shizuku also invalidates the cached proxy; drop it so the next
                         // successful call rebuilds one over the fresh binder.
                         service = null
                         return@collect
                     }
-                    apply(wish.hideIcons, wish.hideSystemInfo, wish.hideClock, wish.silenceAlerts, packageName)
+                    applyEffectiveFlags(context.packageName)
                 }
         }
     }
 
     /**
-     * Applies or clears the status-bar disable flags in one call — the flags are a single bitmask
-     * held against [token], so every wish must be pushed together or a later call would clear the
-     * earlier ones. Returns false when the call didn't go through, which on a [ShizukuStatus.READY]
-     * bridge means the OS rejected or moved the hidden API.
+     * Applies or clears the persistent status-bar wishes while preserving any active transient
+     * notification-icon pulse. Kept as the existing public API for callers outside [start].
      */
+    @Synchronized
     fun apply(
         hideIcons: Boolean,
         hideSystemInfo: Boolean,
         hideClock: Boolean,
         silenceAlerts: Boolean,
         packageName: String,
-    ): Boolean = runCatching {
-        var flags = DISABLE_NONE
-        if (hideIcons) flags = flags or DISABLE_NOTIFICATION_ICONS
-        if (hideSystemInfo) flags = flags or DISABLE_SYSTEM_INFO
-        if (hideClock) flags = flags or DISABLE_CLOCK
-        if (silenceAlerts) flags = flags or DISABLE_NOTIFICATION_ALERTS
+    ): Boolean {
+        applicationPackageName = packageName
+        persistentFlags = StatusBarFlagState(
+            hideNotificationIcons = hideIcons,
+            hideSystemInfo = hideSystemInfo,
+            hideClock = hideClock,
+            silenceAlerts = silenceAlerts,
+        )
+        return applyEffectiveFlagsLocked(packageName)
+    }
+
+    /**
+     * Temporarily adds notification-icon suppression to the saved status-bar wish. Activation is
+     * skipped when Shizuku is unavailable and never requests permission; deactivation always clears
+     * the in-memory transient bit so a later reconnect restores only the user's persistent wishes.
+     */
+    @Synchronized
+    fun setTransientNotificationIconSuppression(active: Boolean): Boolean {
+        val packageName = applicationPackageName ?: return false
+        if (active && ShizukuState.status.value != ShizukuStatus.READY) return false
+
+        transientHideNotificationIcons = active
+        if (ShizukuState.status.value != ShizukuStatus.READY) {
+            service = null
+            return false
+        }
+
+        val applied = applyEffectiveFlagsLocked(packageName)
+        if (!applied && active) transientHideNotificationIcons = false
+        return applied
+    }
+
+    /** Replaces the remembered persistent wish without touching transient pulse state. */
+    @Synchronized
+    private fun updatePersistentFlags(flags: StatusBarFlagState) {
+        persistentFlags = flags
+    }
+
+    /** Applies the composed persistent and transient wish using the process-lifetime [token]. */
+    @Synchronized
+    private fun applyEffectiveFlags(packageName: String): Boolean = applyEffectiveFlagsLocked(packageName)
+
+    /** Performs the composed apply while the controller monitor is already held. */
+    private fun applyEffectiveFlagsLocked(packageName: String): Boolean {
+        val effective = StatusBarEffectiveFlags.compose(
+            persistent = persistentFlags,
+            transientHideNotificationIcons = transientHideNotificationIcons,
+        )
+        return applyFlagsLocked(effective, packageName)
+    }
+
+    /** Converts one complete effective wish into the platform disable mask and applies it atomically. */
+    private fun applyFlagsLocked(flags: StatusBarFlagState, packageName: String): Boolean = runCatching {
+        var disableFlags = DISABLE_NONE
+        if (flags.hideNotificationIcons) disableFlags = disableFlags or DISABLE_NOTIFICATION_ICONS
+        if (flags.hideSystemInfo) disableFlags = disableFlags or DISABLE_SYSTEM_INFO
+        if (flags.hideClock) disableFlags = disableFlags or DISABLE_CLOCK
+        if (flags.silenceAlerts) disableFlags = disableFlags or DISABLE_NOTIFICATION_ALERTS
         val statusBar = service ?: buildService().also { service = it }
-        statusBar.disable(flags, packageName)
+        statusBar.disable(disableFlags, packageName)
         true
     }.getOrElse { error ->
         Log.w(
             TAG,
             "Could not apply status-bar flags " +
-                "(icons=$hideIcons, systemInfo=$hideSystemInfo, clock=$hideClock, alerts=$silenceAlerts)",
+                "(icons=${flags.hideNotificationIcons}, systemInfo=${flags.hideSystemInfo}, " +
+                "clock=${flags.hideClock}, alerts=${flags.silenceAlerts})",
             error,
         )
         service = null
