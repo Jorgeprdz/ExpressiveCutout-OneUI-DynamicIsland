@@ -158,7 +158,13 @@ data class IslandEvent(
     val actionIntentAction: String? = null,
     /** Optional URI data to attach to [actionIntentAction]. */
     val actionIntentUri: String? = null,
-)
+    /** Stable LiveActivity identity; null for ordinary transient legacy events. */
+    val stableId: String? = null,
+) {
+    /** Identity Compose uses for arrival and gesture state without keying on mutable content. */
+    val visualIdentity: String
+        get() = stableId ?: notificationKey?.let { "notification:$it" } ?: "event:$id"
+}
 
 /** Which parts of the assistant tile to render (display text, max height). */
 data class AssistantTileOptions(
