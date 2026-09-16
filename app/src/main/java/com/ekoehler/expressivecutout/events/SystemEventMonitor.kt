@@ -1,5 +1,6 @@
 package com.ekoehler.expressivecutout.events
 
+import android.Manifest
 import android.app.KeyguardManager
 import android.bluetooth.BluetoothClass
 import android.bluetooth.BluetoothDevice
@@ -7,6 +8,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.database.ContentObserver
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
@@ -191,6 +193,13 @@ class SystemEventMonitor(
                     }
                 }
                 BluetoothDevice.ACTION_ACL_CONNECTED -> {
+                    if (
+                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                        ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) !=
+                        PackageManager.PERMISSION_GRANTED
+                    ) {
+                        return
+                    }
                     val device = getBluetoothDevice(intent)
                     // Audio headsets/earbuds are handled separately with rich metadata by AudioDeviceCallback
                     val isAudio = runCatching {
@@ -210,6 +219,13 @@ class SystemEventMonitor(
                     }
                 }
                 BluetoothDevice.ACTION_ACL_DISCONNECTED -> {
+                    if (
+                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                        ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) !=
+                        PackageManager.PERMISSION_GRANTED
+                    ) {
+                        return
+                    }
                     val device = getBluetoothDevice(intent)
                     val isAudio = runCatching {
                         device?.bluetoothClass?.majorDeviceClass == BluetoothClass.Device.Major.AUDIO_VIDEO
