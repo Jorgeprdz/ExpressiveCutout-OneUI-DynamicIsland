@@ -28,6 +28,23 @@ class IslandEventVisualIdentityTest {
     }
 
     @Test
+    fun `same satellite stable id keeps content key across metadata updates`() {
+        val first = event(id = 1L, label = "Track A", stableId = "music:spotify:sessionA")
+        val updated = first.copy(id = 2L, label = "Track B")
+
+        assertEquals(first.visualIdentity, updated.visualIdentity)
+        assertEquals(satelliteContentKey(first), satelliteContentKey(updated))
+    }
+
+    @Test
+    fun `different satellite stable ids use different content keys`() {
+        val first = event(id = 1L, label = "Track", stableId = "music:spotify:sessionA")
+        val second = event(id = 2L, label = "Timer", stableId = "timer:clock:key")
+
+        assertNotEquals(satelliteContentKey(first), satelliteContentKey(second))
+    }
+
+    @Test
     fun `legacy notification key survives renderer id updates`() {
         val first = event(id = 1L, label = "Download 10%", notificationKey = "pkg|42")
         val updated = first.copy(id = 2L, label = "Download 20%")

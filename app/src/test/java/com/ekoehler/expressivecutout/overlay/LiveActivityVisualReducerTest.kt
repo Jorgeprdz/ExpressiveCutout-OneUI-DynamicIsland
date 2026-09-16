@@ -100,6 +100,22 @@ class LiveActivityVisualReducerTest {
     }
 
     @Test
+    fun `same satellite stable id updates in place without new appearance`() {
+        val call = activity("call:dialer:key", LiveActivity.Kind.CALL, "Caller", 200L)
+        val music = activity("music:spotify:sessionA", LiveActivity.Kind.MUSIC, "Track A", 100L)
+        val updatedMusic = music.copy(title = "Track B", updatedElapsedRealtime = 300L)
+
+        val result = LiveActivityVisualReducer.reduce(
+            previous = LiveActivityVisualState(primary = call, satellite = music),
+            slots = LiveActivityCoordinator.Slots(primary = call, satellite = updatedMusic),
+        )
+
+        assertEquals(call.stableId, result.primary?.stableId)
+        assertEquals(updatedMusic, result.satellite)
+        assertEquals(LiveActivityVisualTransition.NONE, result.transition)
+    }
+
+    @Test
     fun `removing satellite preserves primary`() {
         val call = activity("call:dialer:key", LiveActivity.Kind.CALL, "Caller", 200L)
         val music = activity("music:spotify:sessionA", LiveActivity.Kind.MUSIC, "Track", 100L)

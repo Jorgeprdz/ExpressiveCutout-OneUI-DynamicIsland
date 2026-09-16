@@ -1,5 +1,10 @@
 package com.ekoehler.expressivecutout.overlay
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -18,6 +23,9 @@ import com.ekoehler.expressivecutout.data.AppearanceSettings
  * same room in the overlay window and in the touchable region.
  */
 internal const val SATELLITE_GAP_DP = 8
+
+/** Short handoff between two already-visible satellite identities. */
+private const val SATELLITE_IDENTITY_TRANSITION_MS = 150
 
 /**
  * The satellite bubble: the event the pill displaced, parked beside it so it stays visible instead of
@@ -47,13 +55,26 @@ internal fun SatelliteBubble(
         appColor = event.appColor,
     ) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            // No call branch to ask for: a call owns the whole cutout and is never parked beside one.
-            EventBadge(
-                event = event,
-                badgeSize = badgeSizeFor(diameterDp),
-                iconSize = badgeIconSizeFor(diameterDp),
-                showCallPhoto = false,
-            )
+            // Keep enter/exit on satelliteReveal in DynamicIsland. This transition is only for an
+            // identity handoff while the bubble remains visible, so A can leave as B arrives without
+            // replaying the satellite's global scale/alpha entrance.
+            AnimatedContent(
+                targetState = event,
+                transitionSpec = {
+                    fadeIn(animationSpec = tween(SATELLITE_IDENTITY_TRANSITION_MS)) togetherWith
+                        fadeOut(animationSpec = tween(SATELLITE_IDENTITY_TRANSITION_MS))
+                },
+                contentKey = ::satelliteContentKey,
+                label = "islandSatelliteIdentityContent",
+            ) { contentEvent ->
+                // No call branch to ask for: a call owns the whole cutout and is never parked beside one.
+                EventBadge(
+                    event = contentEvent,
+                    badgeSize = badgeSizeFor(diameterDp),
+                    iconSize = badgeIconSizeFor(diameterDp),
+                    showCallPhoto = false,
+                )
+            }
         }
     }
 }
