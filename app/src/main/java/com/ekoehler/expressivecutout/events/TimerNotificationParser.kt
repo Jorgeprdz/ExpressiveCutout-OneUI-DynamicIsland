@@ -20,12 +20,12 @@ data class ParsedTimer(
 )
 
 /**
- * Recognises and reads count-down timer notifications across the two ways Android surfaces them:
+ * Recognises and reads count-down timer notifications across the formats the app can observe:
  *
- *  - **Live Updates (Android 16+):** a "promoted ongoing" notification rendered with the
- *    `MetricStyle` template, whose critical metric is a counting-down time. Google Clock uses this;
- *    the remaining time lives in the metric's `value` bundle (`zeroElapsedRealtime` while running,
- *    `pausedDuration` while paused) — not in any title/text or the classic chronometer extras.
+ *  - **Private/compat metric bundle:** some clock notifications expose an `android.metrics` payload
+ *    whose critical value counts down. These extras are parsed defensively as a legacy/OEM fallback;
+ *    they are not treated as the public Android 16 Live Update API. Public Android 16
+ *    `ProgressStyle` handling lives in `notifications/live`.
  *  - **Classic chronometer:** the older format that sets a *counting-down* chronometer anchored to
  *    the notification's `when`. Kept as a fallback for clock apps that still use it.
  *
@@ -35,7 +35,7 @@ data class ParsedTimer(
 object TimerNotificationParser {
 
     /**
-     * Whether this notification is a countdown timer, by either the modern metric extras or the
+     * Whether this notification is a countdown timer, by either the metric-bundle fallback or the
      * classic count-down chronometer.
      */
     fun isTimer(sbn: StatusBarNotification): Boolean {
@@ -79,7 +79,7 @@ object TimerNotificationParser {
         )
     }
 
-    /** The counting-down critical metric of a `MetricStyle` notification, or null if it isn't one. */
+    /** The counting-down critical metric from the private/compat bundle, or null if absent. */
     private fun readMetricCountdown(extras: Bundle): MetricCountdown? {
         @Suppress("DEPRECATION")
         val metrics = extras.get(KEY_METRICS) as? List<*> ?: return null
@@ -116,8 +116,8 @@ object TimerNotificationParser {
         getCharSequence(Notification.EXTRA_TITLE)?.toString()?.takeIf { it.isNotBlank() }
 
     /**
-     * The timer state a modern clock app publishes directly, before it is turned into a tile.
-     * Either running (with an end time) or paused (with the remaining time frozen).
+     * Timer state recovered from the metric-bundle fallback before it becomes a tile. Either running
+     * (with an end time) or paused (with the remaining time frozen).
      */
     private data class MetricCountdown(
         val endElapsedRealtimeMs: Long?,
@@ -126,9 +126,8 @@ object TimerNotificationParser {
     )
 
     /**
-     * Keys the MetricStyle template stores its data under (mirrored by androidx
-     * NotificationCompat's MetricStyle). Read defensively — any missing key just means "not a
-     * countdown we can read".
+     * Private/compat metric keys observed in timer notifications. Read defensively — any missing key
+     * simply means this fallback cannot identify a countdown.
      */
     private const val KEY_METRICS = "android.metrics"
     private const val KEY_CRITICAL_INDEX = "android.metrics.criticalIndex"
