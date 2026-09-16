@@ -26,6 +26,18 @@ internal object StatusBarPulseDeadline {
     fun isActive(deadlineElapsedRealtimeMs: Long?, nowElapsedRealtimeMs: Long): Boolean =
         deadlineElapsedRealtimeMs != null && nowElapsedRealtimeMs < deadlineElapsedRealtimeMs
 
+    /**
+     * Returns true only when the wake-up still owns the current lease and that lease is expired.
+     * A newer deadline therefore makes an older wake-up harmless.
+     */
+    fun shouldExpire(
+        observedDeadlineElapsedRealtimeMs: Long,
+        currentDeadlineElapsedRealtimeMs: Long?,
+        nowElapsedRealtimeMs: Long,
+    ): Boolean =
+        currentDeadlineElapsedRealtimeMs == observedDeadlineElapsedRealtimeMs &&
+            !isActive(currentDeadlineElapsedRealtimeMs, nowElapsedRealtimeMs)
+
     /** Remaining monotonic milliseconds, clamped to zero once the deadline has expired. */
     fun remainingMs(deadlineElapsedRealtimeMs: Long?, nowElapsedRealtimeMs: Long): Long =
         deadlineElapsedRealtimeMs?.minus(nowElapsedRealtimeMs)?.coerceAtLeast(0L) ?: 0L
