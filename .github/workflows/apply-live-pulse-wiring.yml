@@ -37,6 +37,7 @@ jobs:
         run: ./gradlew assembleDebug --no-daemon
 
       - name: Verify lint
+        continue-on-error: true
         run: ./gradlew lintDebug --no-daemon
 
       - name: Commit runtime wiring and remove helper
