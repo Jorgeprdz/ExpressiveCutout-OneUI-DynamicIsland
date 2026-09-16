@@ -3,8 +3,12 @@ package com.ekoehler.expressivecutout.overlay
 import android.graphics.drawable.AdaptiveIconDrawable
 import android.os.Build
 import android.os.SystemClock
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.AnimationSpec
 import androidx.compose.animation.core.AnimationVector1D
@@ -992,76 +996,86 @@ fun DynamicIsland(
                     appColor = shownEvent?.primaryColor(),
                     adaptiveColor = shownEvent?.primaryColor(),
                 ) {
-                    Crossfade(targetState = isExpanded, animationSpec = tween(scaled(150)), label = "islandContent") { showExpanded ->
-                        if (emptyPill) {
-                            if (showExpanded) {
-                                CenterContent(
-                                    shortcuts = centerShortcuts,
-                                    showLabels = centerShowLabels,
-                                    fillContainers = centerFillContainers,
-                                    themedIcons = centerThemedIcons,
-                                    onContentHeight = { centerContentHeightDp = it },
-                                    onShortcut = { shortcut ->
-                                        // Any press counts as activity, restarting the auto-collapse
-                                        // timer so the center stays up while it's being used.
-                                        centerInteraction++
-                                        // In-place toggles (torch) keep the center open; everything
-                                        // else closes it as we act, so it isn't left over the screen
-                                        // (and out of a screenshot the shortcut may trigger).
-                                        if (!shortcut.keepsCenterOpen) tapExpanded = false
-                                        onCenterShortcut(shortcut)
-                                    },
-                                )
-                            } else if (emptyIcon != null) {
-                                EmptyPillContent(
-                                    icon = emptyIcon,
-                                    containerColor = emptyIconColor,
-                                    heightDp = collapsed.heightDp,
-                                    isStickToCamera = isStickToCamera,
-                                )
-                            }
-                        } else {
-                            shownEvent?.let { e ->
-                                if (e.call != null) {
-                                    CallNormalContent(event = e, appearance = appearance, onAction = onAction)
-                                } else if (showExpanded) {
-                                    ExpandedContent(
-                                        event = e,
-                                        showActions = showActions,
-                                        appearance = appearance,
-                                        targetWidthDp = displayWidthDp * expanded.widthPercent / 100,
-                                        expandProgress = expandProgress,
-                                        topMarginDp = expanded.topMarginDp,
-                                        replyingTo = replyingTo,
-                                        replySent = confirmingSent,
-                                        progressData = e.progressData,
-                                        onAction = onAction,
-                                        onStartReply = { replyingTo = it },
-                                        onCancelReply = { replyingTo = null },
-                                        onSendReply = { text ->
-                                            replyingTo?.let { action ->
-                                                sentReply = action to text
-                                                scope.launch {
-                                                    delay(REPLY_SENT_FEEDBACK_MS)
-                                                    onReply(action, text)
-                                                }
-                                            }
-                                            replyingTo = null
-                                        },
-                                        onDismiss = onDismiss,
-                                        onHeightMeasured = { hDp ->
-                                            if (e.assistant != null) assistantContentHeightDp = hDp
-                                            else expandedNotificationHeightDp = hDp
+                    AnimatedContent(
+                        targetState = shownEvent,
+                        transitionSpec = {
+                            fadeIn(animationSpec = tween(scaled(150))) togetherWith
+                                fadeOut(animationSpec = tween(scaled(150)))
+                        },
+                        contentKey = ::primaryContentKey,
+                        label = "islandPrimaryIdentityContent",
+                    ) { contentEvent ->
+                        Crossfade(targetState = isExpanded, animationSpec = tween(scaled(150)), label = "islandContent") { showExpanded ->
+                            if (emptyPill) {
+                                if (showExpanded) {
+                                    CenterContent(
+                                        shortcuts = centerShortcuts,
+                                        showLabels = centerShowLabels,
+                                        fillContainers = centerFillContainers,
+                                        themedIcons = centerThemedIcons,
+                                        onContentHeight = { centerContentHeightDp = it },
+                                        onShortcut = { shortcut ->
+                                            // Any press counts as activity, restarting the auto-collapse
+                                            // timer so the center stays up while it's being used.
+                                            centerInteraction++
+                                            // In-place toggles (torch) keep the center open; everything
+                                            // else closes it as we act, so it isn't left over the screen
+                                            // (and out of a screenshot the shortcut may trigger).
+                                            if (!shortcut.keepsCenterOpen) tapExpanded = false
+                                            onCenterShortcut(shortcut)
                                         },
                                     )
-                                } else {
-                                    CollapsedContent(
-                                        event = e,
+                                } else if (emptyIcon != null) {
+                                    EmptyPillContent(
+                                        icon = emptyIcon,
+                                        containerColor = emptyIconColor,
                                         heightDp = collapsed.heightDp,
                                         isStickToCamera = isStickToCamera,
-                                        trailingInsetDp = collapsedTrailingInsetDp,
-                                        iconPop = iconPop,
                                     )
+                                }
+                            } else {
+                                contentEvent?.let { e ->
+                                    if (e.call != null) {
+                                        CallNormalContent(event = e, appearance = appearance, onAction = onAction)
+                                    } else if (showExpanded) {
+                                        ExpandedContent(
+                                            event = e,
+                                            showActions = showActions,
+                                            appearance = appearance,
+                                            targetWidthDp = displayWidthDp * expanded.widthPercent / 100,
+                                            expandProgress = expandProgress,
+                                            topMarginDp = expanded.topMarginDp,
+                                            replyingTo = replyingTo,
+                                            replySent = confirmingSent,
+                                            progressData = e.progressData,
+                                            onAction = onAction,
+                                            onStartReply = { replyingTo = it },
+                                            onCancelReply = { replyingTo = null },
+                                            onSendReply = { text ->
+                                                replyingTo?.let { action ->
+                                                    sentReply = action to text
+                                                    scope.launch {
+                                                        delay(REPLY_SENT_FEEDBACK_MS)
+                                                        onReply(action, text)
+                                                    }
+                                                }
+                                                replyingTo = null
+                                            },
+                                            onDismiss = onDismiss,
+                                            onHeightMeasured = { hDp ->
+                                                if (e.assistant != null) assistantContentHeightDp = hDp
+                                                else expandedNotificationHeightDp = hDp
+                                            },
+                                        )
+                                    } else {
+                                        CollapsedContent(
+                                            event = e,
+                                            heightDp = collapsed.heightDp,
+                                            isStickToCamera = isStickToCamera,
+                                            trailingInsetDp = collapsedTrailingInsetDp,
+                                            iconPop = if (e.visualIdentity == shownIdentity) iconPop else null,
+                                        )
+                                    }
                                 }
                             }
                         }

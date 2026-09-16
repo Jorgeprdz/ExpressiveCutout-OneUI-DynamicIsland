@@ -16,6 +16,15 @@ class IslandEventVisualIdentityTest {
         val updated = first.copy(id = 2L, label = "Track B")
 
         assertEquals(first.visualIdentity, updated.visualIdentity)
+        assertEquals(primaryContentKey(first), primaryContentKey(updated))
+    }
+
+    @Test
+    fun `different live stable ids use different primary content keys`() {
+        val music = event(id = 1L, label = "Track", stableId = "music:spotify:sessionA")
+        val call = event(id = 2L, label = "Caller", stableId = "call:dialer:key")
+
+        assertNotEquals(primaryContentKey(music), primaryContentKey(call))
     }
 
     @Test
