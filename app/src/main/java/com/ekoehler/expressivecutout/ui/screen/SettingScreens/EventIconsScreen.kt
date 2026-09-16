@@ -46,7 +46,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
@@ -508,8 +507,9 @@ internal fun EventIconThumbnail(
         else -> Color(type.accent)
     }
     val glyphColor by animateColorAsState(targetGlyph, label = "eventGlyphColor")
-    val bitmap by produceState<ImageBitmap?>(initialValue = null, key1 = source) {
-        value = when (val current = source) {
+    var bitmap by remember(source) { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(source) {
+        bitmap = when (val current = source) {
             is IconSource.Image -> withContext(Dispatchers.IO) {
                 Uri.parse(current.uri).loadImageBitmapOrNull(context)
             }

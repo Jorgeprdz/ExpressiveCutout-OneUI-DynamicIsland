@@ -50,9 +50,9 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -600,8 +600,9 @@ private fun AppPickerSheet(
 ) {
     val context = LocalContext.current
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    val apps by produceState<List<InstalledApp>?>(initialValue = null, context) {
-        value = withContext(Dispatchers.IO) { loadLaunchableApps(context) }
+    var apps by remember(context) { mutableStateOf<List<InstalledApp>?>(null) }
+    LaunchedEffect(context) {
+        apps = withContext(Dispatchers.IO) { loadLaunchableApps(context) }
     }
     var query by remember { mutableStateOf("") }
 
@@ -677,8 +678,9 @@ private fun AppPickerSheet(
 @Composable
 private fun rememberAppLabel(packageName: String): String {
     val context = LocalContext.current
-    val label by produceState(initialValue = packageName, packageName) {
-        value = withContext(Dispatchers.IO) {
+    var label by remember(packageName) { mutableStateOf(packageName) }
+    LaunchedEffect(packageName) {
+        label = withContext(Dispatchers.IO) {
             runCatching {
                 val pm = context.packageManager
                 pm.getApplicationLabel(pm.getApplicationInfo(packageName, 0)).toString()
@@ -704,8 +706,9 @@ private fun EmptyIconThumbnail(
     // Ink that reads on the disc: dark on a light fill, light on a dark one.
     val glyph = if (disc.luminance() > 0.5f) Color.Black.copy(alpha = 0.75f) else Color.White
 
-    val bitmap by produceState<ImageBitmap?>(initialValue = null, key1 = source) {
-        value = when (val current = source) {
+    var bitmap by remember(source) { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(source) {
+        bitmap = when (val current = source) {
             is IconSource.Image -> withContext(Dispatchers.IO) {
                 Uri.parse(current.uri).loadImageBitmapOrNull(context)
             }

@@ -42,9 +42,9 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -85,8 +85,9 @@ internal fun AppsScreen(
     val context = LocalContext.current
     val disabled by viewModel.disabledApps.collectAsStateWithLifecycle()
     val normalOnly by viewModel.normalOnlyApps.collectAsStateWithLifecycle()
-    val apps by produceState<List<InstalledApp>?>(initialValue = null, context) {
-        value = withContext(Dispatchers.IO) { loadLaunchableApps(context) }
+    var apps by remember(context) { mutableStateOf<List<InstalledApp>?>(null) }
+    LaunchedEffect(context) {
+        apps = withContext(Dispatchers.IO) { loadLaunchableApps(context) }
     }
     var query by rememberSaveable { mutableStateOf("") }
     // Only one row's options are open at a time, so the list never turns into a wall of controls.
@@ -318,13 +319,14 @@ internal fun AppIcon(packageName: String) {
     val context = LocalContext.current
     // Seeding from the cache means a row scrolled back into view paints its icon on the very first
     // frame — no null pass, no second composition, no package-manager round trip.
-    val icon by produceState(initialValue = iconCache.get(packageName), packageName) {
-        if (value != null) return@produceState
+    var icon by remember(packageName) { mutableStateOf(iconCache.get(packageName)) }
+    LaunchedEffect(packageName) {
+        if (icon != null) return@LaunchedEffect
         val loaded = withContext(Dispatchers.IO) {
             iconLoadLimit.withPermit { loadAppIcon(context, packageName) }
         }
         if (loaded != null) iconCache.put(packageName, loaded)
-        value = loaded
+        icon = loaded
     }
     Box(
         modifier = Modifier

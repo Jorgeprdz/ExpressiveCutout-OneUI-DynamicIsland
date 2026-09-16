@@ -169,7 +169,7 @@ fun MainScreen(viewModel: AppViewModel = viewModel()) {
     // No tab has an app bar: each screen carries its own heading (the app identity or a section
     // title on the list, the screen title in the back pill), so a bar would only waste height at
     // the top. A scrim mirroring the bottom one stands in for it.
-    Scaffold { _ ->
+    Scaffold(contentWindowInsets = WindowInsets(0, 0, 0, 0)) { scaffoldPadding ->
         val navBarBottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
         val statusBarTopInset = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
         // The scrim is only a fade for *scrolled* content, so content at rest starts below it —
@@ -183,7 +183,12 @@ fun MainScreen(viewModel: AppViewModel = viewModel()) {
             bottom = 96.dp + navBarBottomInset,
         )
 
-        Box(modifier = Modifier.fillMaxSize().background(color = MaterialTheme.colorScheme.surfaceContainer)) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(scaffoldPadding)
+                .background(color = MaterialTheme.colorScheme.surfaceContainer),
+        ) {
             // Peek animation: as the user drags back, the content shrinks, rounds its corners
             // and slides toward the swiped edge, revealing the surface beneath.
             val contentTransform = Modifier.graphicsLayer {

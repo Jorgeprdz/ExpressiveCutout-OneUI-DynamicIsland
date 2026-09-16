@@ -73,7 +73,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.key
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -1664,8 +1663,9 @@ private fun EmptyPillContent(
         else -> LocalContentColor.current
     }
 
-    val bitmap by produceState<ImageBitmap?>(initialValue = null, key1 = icon) {
-        value = when (icon) {
+    var bitmap by remember(icon) { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(icon) {
+        bitmap = when (icon) {
             is IconSource.Image -> withContext(Dispatchers.IO) {
                 Uri.parse(icon.uri).loadImageBitmapOrNull(context)
             }
@@ -1881,8 +1881,9 @@ private fun centerShortcutLabel(shortcut: CenterShortcut): String {
     CenterShortcutCatalog.labelResFor(shortcut)?.let { return stringResource(it) }
     val pkg = (shortcut as? CenterShortcut.LaunchApp)?.packageName ?: return ""
     val context = LocalContext.current
-    val label by produceState(initialValue = pkg, pkg) {
-        value = withContext(Dispatchers.IO) {
+    var label by remember(pkg) { mutableStateOf(pkg) }
+    LaunchedEffect(pkg) {
+        label = withContext(Dispatchers.IO) {
             runCatching {
                 val pm = context.packageManager
                 pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
@@ -1903,8 +1904,9 @@ private class LoadedAppIcon(val bitmap: ImageBitmap, val themed: Boolean)
 @Composable
 private fun rememberAppIcon(packageName: String, themed: Boolean): LoadedAppIcon? {
     val context = LocalContext.current
-    val icon by produceState<LoadedAppIcon?>(initialValue = null, packageName, themed) {
-        value = withContext(Dispatchers.IO) {
+    var icon by remember(packageName, themed) { mutableStateOf<LoadedAppIcon?>(null) }
+    LaunchedEffect(packageName, themed) {
+        icon = withContext(Dispatchers.IO) {
             runCatching {
                 val drawable = context.packageManager.getApplicationIcon(packageName)
                 val monochrome = if (themed && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -1970,10 +1972,11 @@ fun formatNotificationHeader(
 @Composable
 fun rememberRelativeTime(postTimeMs: Long?): String? {
     if (postTimeMs == null) return null
-    val relativeTime by produceState(initialValue = formatRelativeTime(postTimeMs), key1 = postTimeMs) {
+    var relativeTime by remember(postTimeMs) { mutableStateOf(formatRelativeTime(postTimeMs)) }
+    LaunchedEffect(postTimeMs) {
         while (true) {
             delay(1_000L)
-            value = formatRelativeTime(postTimeMs)
+            relativeTime = formatRelativeTime(postTimeMs)
         }
     }
     return relativeTime
