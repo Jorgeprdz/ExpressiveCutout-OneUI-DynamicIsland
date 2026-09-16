@@ -1,0 +1,146 @@
+name: Strict lint cleanup
+
+on:
+  push:
+    branches:
+      - feature/live-activities-dynamic-island
+    paths:
+      - .github/workflows/strict-lint-cleanup.yml
+      - .github/scripts/fix_lint_debt.py
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/live-activities-dynamic-island
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Reproduce pre-existing lint debt
+        shell: bash
+        run: |
+          set +e
+          ./gradlew lintDebug --no-daemon > /tmp/lint-before.log 2>&1
+          rc=$?
+          set -e
+          cat /tmp/lint-before.log
+          test "$rc" -ne 0
+          grep -q "Lint found 15 errors, 88 warnings" /tmp/lint-before.log
+          echo "LINT_BEFORE=EXPECTED_FAIL_15_ERRORS_88_WARNINGS"
+
+      - name: Apply minimal lint fixes
+        run: python3 .github/scripts/fix_lint_debt.py
+
+      - name: Preserve pulse implementation exactly
+        shell: bash
+        run: |
+          git diff --exit-code HEAD -- \
+            app/src/main/java/com/ekoehler/expressivecutout/overlay/IslandOverlayController.kt \
+            app/src/main/java/com/ekoehler/expressivecutout/overlay/LiveActivityPulseDetector.kt \
+            app/src/main/java/com/ekoehler/expressivecutout/overlay/LiveActivityPulseVisibility.kt \
+            app/src/main/java/com/ekoehler/expressivecutout/system/StatusBarIconController.kt \
+            app/src/main/java/com/ekoehler/expressivecutout/system/StatusBarEffectiveFlags.kt \
+            app/src/main/java/com/ekoehler/expressivecutout/system/StatusBarFlagState.kt \
+            app/src/main/java/com/ekoehler/expressivecutout/system/StatusBarPulseDeadline.kt
+          git diff --exit-code HEAD -- app/build.gradle.kts
+
+      - name: Unit tests
+        run: ./gradlew testDebugUnitTest --no-daemon
+
+      - name: Assemble debug
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: Lint strict
+        run: ./gradlew lintDebug --no-daemon
+
+      - name: Static audit
+        shell: bash
+        run: |
+          git diff --check
+          grep -q 'DEFAULT_LIVE_ACTIVITY_PULSE_MS = 2_500L' app/src/main/java/com/ekoehler/expressivecutout/system/StatusBarPulseDeadline.kt
+          grep -q 'SystemClock.elapsedRealtime()' app/src/main/java/com/ekoehler/expressivecutout/system/StatusBarIconController.kt
+          test "$(grep -R --include='*.kt' -n 'private val token = Binder()' app/src/main/java/com/ekoehler/expressivecutout/system/StatusBarIconController.kt | wc -l)" -eq 1
+          ! grep -R --include='*.kt' -n 'delay(2500\|delay(2_500' app/src/main/java/com/ekoehler/expressivecutout/overlay/LiveActivityPulseDetector.kt app/src/main/java/com/ekoehler/expressivecutout/system/StatusBarIconController.kt app/src/main/java/com/ekoehler/expressivecutout/system/StatusBarPulseDeadline.kt
+          ! grep -R --include='*.kt' -n 'requestPermission(' app/src/main/java/com/ekoehler/expressivecutout/overlay/LiveActivityPulseDetector.kt app/src/main/java/com/ekoehler/expressivecutout/system/StatusBarIconController.kt
+
+      - name: Wait for sibling Build before final push
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for _ in $(seq 1 120); do
+            data="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/build.yml/runs?head_sha=${GITHUB_SHA}&event=push&per_page=10")"
+            status="$(jq -r '.workflow_runs[0].status // "missing"' <<<"$data")"
+            conclusion="$(jq -r '.workflow_runs[0].conclusion // ""' <<<"$data")"
+            echo "SIBLING_BUILD_STATUS=$status CONCLUSION=$conclusion"
+            if [ "$status" = "completed" ]; then
+              test "$conclusion" = "success"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Sibling Build did not complete in polling window" >&2
+          exit 1
+
+      - name: Commit verified cleanup
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add app/src/main/AndroidManifest.xml app/src/main/java/com/ekoehler/expressivecutout/events/SystemEventMonitor.kt
+          git commit -m "[FIX] guard bluetooth access behind runtime permission"
+
+          git add \
+            app/src/main/java/com/ekoehler/expressivecutout/ui/screen/SettingScreens/AppsScreen.kt \
+            app/src/main/java/com/ekoehler/expressivecutout/ui/screen/SettingScreens/EventIconsScreen.kt \
+            app/src/main/java/com/ekoehler/expressivecutout/ui/screen/SettingScreens/ShowsWhenEmptyScreen.kt \
+            app/src/main/java/com/ekoehler/expressivecutout/overlay/DynamicIsland.kt \
+            app/src/main/java/com/ekoehler/expressivecutout/ui/MainScreen.kt
+          git commit -m "[FIX] resolve compose lint correctness errors"
+
+          git add .github/workflows/build.yml
+          git commit -m "[FIX] enforce lint failures in build"
+
+          git rm .github/scripts/fix_lint_debt.py .github/workflows/strict-lint-cleanup.yml
+          git commit -m "[CHORE] remove lint cleanup helper"
+
+          git diff --check HEAD~4..HEAD
+          git push origin HEAD:feature/live-activities-dynamic-island
+          echo "FINAL_HEAD=$(git rev-parse HEAD)"
+
+      - name: Wait for strict final Build
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          final_sha="$(git rev-parse HEAD)"
+          for _ in $(seq 1 180); do
+            data="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/build.yml/runs?head_sha=${final_sha}&event=push&per_page=10")"
+            run_id="$(jq -r '.workflow_runs[0].id // ""' <<<"$data")"
+            status="$(jq -r '.workflow_runs[0].status // "missing"' <<<"$data")"
+            conclusion="$(jq -r '.workflow_runs[0].conclusion // ""' <<<"$data")"
+            echo "FINAL_BUILD_RUN=$run_id STATUS=$status CONCLUSION=$conclusion"
+            if [ "$status" = "completed" ]; then
+              test "$conclusion" = "success"
+              echo "FULL_GREEN_RUN=$run_id"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Final strict Build did not complete in polling window" >&2
+          exit 1
