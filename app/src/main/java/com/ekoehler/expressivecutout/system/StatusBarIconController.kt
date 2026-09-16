@@ -3,9 +3,12 @@ package com.ekoehler.expressivecutout.system
 import android.content.Context
 import android.os.Binder
 import android.os.IBinder
+import android.os.SystemClock
 import android.util.Log
 import com.ekoehler.expressivecutout.data.StatusBarPreferences
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import rikka.shizuku.ShizukuBinderWrapper
@@ -59,6 +62,18 @@ object StatusBarIconController {
     @Volatile
     private var applicationPackageName: String? = null
 
+    /** Process-lifetime scope supplied by the Application, reused for the single pulse expiry job. */
+    @Volatile
+    private var applicationScope: CoroutineScope? = null
+
+    /** Monotonic expiry of the current transient notification-icon pulse, or null when inactive. */
+    @Volatile
+    private var pulseDeadlineElapsedRealtimeMs: Long? = null
+
+    /** The only pulse-expiry job; overlapping arrivals extend its deadline instead of spawning jobs. */
+    @Volatile
+    private var pulseExpiryJob: Job? = null
+
     /**
      * Keeps the system status bar in sync with the saved wish, re-applying whenever Shizuku becomes
      * reachable again — after a reboot, or after the user starts Shizuku for the first time.
@@ -71,6 +86,7 @@ object StatusBarIconController {
     fun start(context: Context, scope: CoroutineScope) {
         val preferences = StatusBarPreferences(context)
         applicationPackageName = context.packageName
+        applicationScope = scope
         scope.launch {
             combine(
                 preferences.hideNotificationIcons,
@@ -124,6 +140,41 @@ object StatusBarIconController {
     }
 
     /**
+     * Starts or extends the one transient notification-icon suppression lease. The deadline uses
+     * [SystemClock.elapsedRealtime] so wall-clock changes cannot shorten or lengthen the pulse. A
+     * missing Shizuku grant simply skips the optional effect and never asks the user for permission.
+     */
+    @Synchronized
+    fun pulseNotificationIcons(
+        durationMs: Long = StatusBarPulseDeadline.DEFAULT_LIVE_ACTIVITY_PULSE_MS,
+    ): Boolean {
+        if (durationMs <= 0L) {
+            clearPulseLocked()
+            return false
+        }
+        if (ShizukuState.status.value != ShizukuStatus.READY) return false
+        val scope = applicationScope ?: return false
+
+        val now = SystemClock.elapsedRealtime()
+        val deadline = StatusBarPulseDeadline.extend(
+            currentDeadlineElapsedRealtimeMs = pulseDeadlineElapsedRealtimeMs,
+            nowElapsedRealtimeMs = now,
+            durationMs = durationMs,
+        ) ?: return false
+        pulseDeadlineElapsedRealtimeMs = deadline
+
+        if (!setTransientNotificationIconSuppression(active = true)) {
+            pulseDeadlineElapsedRealtimeMs = null
+            return false
+        }
+
+        if (pulseExpiryJob?.isActive != true) {
+            pulseExpiryJob = scope.launch { awaitPulseExpiry() }
+        }
+        return true
+    }
+
+    /**
      * Temporarily adds notification-icon suppression to the saved status-bar wish. Activation is
      * skipped when Shizuku is unavailable and never requests permission; deactivation always clears
      * the in-memory transient bit so a later reconnect restores only the user's persistent wishes.
@@ -142,6 +193,42 @@ object StatusBarIconController {
         val applied = applyEffectiveFlagsLocked(packageName)
         if (!applied && active) transientHideNotificationIcons = false
         return applied
+    }
+
+    /** Waits against the latest monotonic deadline; a stale wake-up can never clear an extension. */
+    private suspend fun awaitPulseExpiry() {
+        while (true) {
+            val deadline = synchronized(this) { pulseDeadlineElapsedRealtimeMs } ?: return
+            val remaining = StatusBarPulseDeadline.remainingMs(deadline, SystemClock.elapsedRealtime())
+            if (remaining > 0L) {
+                delay(remaining)
+                continue
+            }
+
+            val shouldClear = synchronized(this) {
+                val latest = pulseDeadlineElapsedRealtimeMs
+                val now = SystemClock.elapsedRealtime()
+                if (latest == deadline && !StatusBarPulseDeadline.isActive(latest, now)) {
+                    pulseDeadlineElapsedRealtimeMs = null
+                    pulseExpiryJob = null
+                    true
+                } else {
+                    false
+                }
+            }
+            if (shouldClear) {
+                setTransientNotificationIconSuppression(active = false)
+                return
+            }
+        }
+    }
+
+    /** Clears an active transient lease without changing the user's persistent status-bar wishes. */
+    private fun clearPulseLocked() {
+        pulseDeadlineElapsedRealtimeMs = null
+        pulseExpiryJob?.cancel()
+        pulseExpiryJob = null
+        setTransientNotificationIconSuppression(active = false)
     }
 
     /** Replaces the remembered persistent wish without touching transient pulse state. */
