@@ -83,6 +83,7 @@ import com.ekoehler.expressivecutout.data.TimerTileSettings
 import com.ekoehler.expressivecutout.service.CutoutNotificationListenerService
 import com.ekoehler.expressivecutout.service.ProgressData
 import com.ekoehler.expressivecutout.system.PermissionUsageMonitor
+import com.ekoehler.expressivecutout.system.StatusBarIconController
 import com.ekoehler.expressivecutout.ui.theme.ExpressiveCutoutTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -187,6 +188,8 @@ class IslandOverlayController(private val context: Context) {
     private val liveEventCache = LinkedHashMap<String, IslandEvent>()
     private var projectedLivePrimary: IslandEvent? = null
     private var projectedLiveSatellite: IslandEvent? = null
+    /** Stable IDs already observed by this controller, used only to detect true live arrivals. */
+    private var liveActivityPulseState = LiveActivityPulseDetector.State()
 
     /**
      * The event parked in the satellite bubble beside the pill, or null when the island is whole.
@@ -1824,6 +1827,7 @@ class IslandOverlayController(private val context: Context) {
         val visiblePrimary = slots.primary?.takeIf(::isLiveActivityVisible)
         val visibleSatellite = if (visiblePrimary != null) slots.satellite?.takeIf(::isLiveActivityVisible) else null
         val visibleSlots = LiveActivityCoordinator.Slots(visiblePrimary, visibleSatellite)
+        observeLiveActivityPulse(slots, visibleSlots)
         val next = LiveActivityVisualReducer.reduce(liveVisualState.value, visibleSlots)
         liveVisualState.value = next
         liveTransitionState.value = next.transition
@@ -1832,6 +1836,41 @@ class IslandOverlayController(private val context: Context) {
         val activeIds = setOfNotNull(next.primary?.stableId, next.satellite?.stableId)
         liveEventCache.keys.retainAll(activeIds)
         if (!overlayHidden && !previewPinned) applyLiveProjection()
+    }
+
+
+    /**
+     * Pulses only for stable identities that become genuinely visible. Canonical-but-hidden IDs are
+     * still recorded as seen so restoring the overlay, enabling split mode, or changing app filters
+     * cannot masquerade as a fresh arrival.
+     */
+    private fun observeLiveActivityPulse(
+        canonicalSlots: LiveActivityCoordinator.Slots,
+        filteredSlots: LiveActivityCoordinator.Slots,
+    ) {
+        val presentStableIds = setOfNotNull(
+            canonicalSlots.primary?.stableId,
+            canonicalSlots.satellite?.stableId,
+        )
+        val overlayCanProject = behaviourState.value.cutoutEnabled && !overlayHidden && !previewPinned
+        val splitAllowed = overlayCanProject && behaviourState.value.splitIslandEnabled &&
+            !isLandscapeSplitSuppressed() && satelliteFitsWidth()
+        val transientOnTop = currentEvent.value?.let { it.stableId == null } == true
+        val visibleStableIds = LiveActivityPulseVisibility.visibleStableIds(
+            slots = filteredSlots,
+            overlayCanProject = overlayCanProject,
+            splitAllowed = splitAllowed,
+            transientOnTop = transientOnTop,
+        )
+        val result = LiveActivityPulseDetector.observe(
+            previous = liveActivityPulseState,
+            presentStableIds = presentStableIds,
+            visibleStableIds = visibleStableIds,
+        )
+        liveActivityPulseState = result.state
+        if (result.shouldPulse) {
+            StatusBarIconController.pulseNotificationIcons()
+        }
     }
 
     /** User/app filters may hide a slot, but never promote/re-rank another activity here. */
