@@ -105,10 +105,8 @@ class NotificationLiveActivityProcessor(
     )
 
     private companion object {
-        /** Routes that may still use the legacy renderer until the LiveActivity renderer lands. */
+        /** Routes allowed to keep the legacy renderer until the LiveActivity renderer lands. */
         val LEGACY_COMPATIBLE_ROUTES = setOf(
-            NotificationLiveActivityRouter.Route.NATIVE_LIVE,
-            NotificationLiveActivityRouter.Route.PROGRESS_STYLE,
             NotificationLiveActivityRouter.Route.SEMANTIC_LIVE,
             NotificationLiveActivityRouter.Route.LEGACY_NOTIFICATION,
         )
