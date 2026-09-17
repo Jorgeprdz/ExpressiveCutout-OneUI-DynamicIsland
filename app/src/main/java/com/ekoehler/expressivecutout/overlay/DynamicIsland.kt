@@ -15,6 +15,7 @@ import androidx.compose.animation.core.AnimationVector1D
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
@@ -136,7 +137,9 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.LinearWavyProgressIndicator
 import androidx.compose.material3.ProgressIndicatorDefaults
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -831,6 +834,7 @@ fun DynamicIsland(
                 .offset(x = if (isStickToCamera) 0.dp else offsetX, y = if (isStickToCamera) 0.dp else offsetY),
         ) {
             if (present || reveal.value > 0f) {
+                val musicPalette = rememberMusicPalette(shownEvent)
                 IslandSurface(
                     modifier = Modifier
                         .width(revealWidth)
@@ -993,8 +997,10 @@ fun DynamicIsland(
                     shape = cornerShape(revealTopLeft, revealTopRight, revealBottomLeft, revealBottomRight),
                     appearance = appearance,
                     progress = expandProgress,
-                    appColor = shownEvent?.primaryColor(),
-                    adaptiveColor = shownEvent?.primaryColor(),
+                    appColor = musicPalette?.accent ?: shownEvent?.primaryColor(),
+                    adaptiveColor = musicPalette?.accent ?: shownEvent?.primaryColor(),
+                    surfaceColorOverride = musicPalette?.surface,
+                    contentColorOverride = musicPalette?.onSurface,
                 ) {
                     AnimatedContent(
                         targetState = shownEvent,
@@ -1034,7 +1040,12 @@ fun DynamicIsland(
                                     )
                                 }
                             } else {
-                                contentEvent?.let { e ->
+                                contentEvent?.let { content ->
+                                    val e = if (content.media != null && musicPalette != null) {
+                                        content.copy(accent = musicPalette.accent)
+                                    } else {
+                                        content
+                                    }
                                     if (e.call != null) {
                                         CallNormalContent(event = e, appearance = appearance, onAction = onAction)
                                     } else if (showExpanded) {
@@ -1215,22 +1226,26 @@ internal fun IslandSurface(
     progress: Float,
     appColor: Color? = null,
     adaptiveColor: Color? = null,
+    surfaceColorOverride: Color? = null,
+    contentColorOverride: Color? = null,
     content: @Composable () -> Unit,
 ) {
     val normalBrush = appearance.backgroundNormal.resolveBrush(appColor, adaptiveColor)
     val expandedBrush = appearance.backgroundExpanded.resolveBrush(appColor, adaptiveColor)
     val normalBaseColor = appearance.backgroundNormal.resolveBaseColor(appColor, adaptiveColor)
     val expandedBaseColor = appearance.backgroundExpanded.resolveBaseColor(appColor, adaptiveColor)
-    val currentBaseColor = lerp(normalBaseColor, expandedBaseColor, progress)
+    val currentBaseColor = surfaceColorOverride ?: lerp(normalBaseColor, expandedBaseColor, progress)
 
-    val repColor = lerp(
+    val repColor = surfaceColorOverride ?: lerp(
         appearance.backgroundNormal.representativeColor(appColor, adaptiveColor),
         appearance.backgroundExpanded.representativeColor(appColor, adaptiveColor),
         progress,
     )
 
     val autoContentColor = if (repColor.luminance() > 0.5f) PILL_TEXT_COLOR_DARK else PILL_TEXT_COLOR
-    val contentColor = appearance.textColor?.resolve(appColor, adaptiveColor) ?: autoContentColor
+    val contentColor = appearance.textColor?.resolve(appColor, adaptiveColor)
+        ?: contentColorOverride
+        ?: autoContentColor
     val border = if (appearance.strokeEnabled) {
         val baseColor = appearance.strokeColor.resolve(appColor, adaptiveColor)
         val strokeFinalColor = baseColor.copy(alpha = (baseColor.alpha * appearance.strokeOpacity).coerceIn(0f, 1f))
@@ -1250,14 +1265,16 @@ internal fun IslandSurface(
     ) {
         CompositionLocalProvider(LocalContentColor provides contentColor) {
             Box(modifier = Modifier.fillMaxSize().background(currentBaseColor)) {
-                Box(modifier = Modifier.fillMaxSize().background(normalBrush))
-                if (progress > 0f) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .graphicsLayer { alpha = progress }
-                            .background(expandedBrush),
-                    )
+                if (surfaceColorOverride == null) {
+                    Box(modifier = Modifier.fillMaxSize().background(normalBrush))
+                    if (progress > 0f) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .graphicsLayer { alpha = progress }
+                                .background(expandedBrush),
+                        )
+                    }
                 }
                 content()
             }
@@ -1326,6 +1343,12 @@ internal fun badgeIconSizeFor(containerDp: Int): Dp = (containerDp * BADGE_ICON_
  *   [OnCallBus] altogether. The satellite bubble passes false: a call owns the whole cutout, so it
  *   is never parked beside one (see the overlay controller's satelliteAllowed).
  */
+/** One artwork frame retained by AnimatedContent while a MUSIC track fades to the next one. */
+private data class MusicArtworkFrame(
+    val trackKey: MediaTrackContentKey,
+    val artwork: ImageBitmap?,
+)
+
 @Composable
 internal fun EventBadge(
     event: IslandEvent,
@@ -1336,6 +1359,31 @@ internal fun EventBadge(
 ) {
     val nowPlaying by NowPlayingBus.state.collectAsStateWithLifecycle()
     val albumArt = albumArtFor(event, nowPlaying)
+    if (event.media != null) {
+        val trackKey = mediaTrackContentKey(event, nowPlaying)
+        AnimatedContent(
+            targetState = MusicArtworkFrame(trackKey, albumArt),
+            transitionSpec = {
+                fadeIn(animationSpec = tween(160)) togetherWith fadeOut(animationSpec = tween(160))
+            },
+            contentKey = { it.trackKey },
+            label = "musicArtworkTrackContent",
+        ) { frame ->
+            if (frame.artwork != null) {
+                AlbumArt(
+                    bitmap = frame.artwork,
+                    size = badgeSize,
+                    modifier = modifier,
+                    rotate = event.media.rotateAlbumArt,
+                    playing = nowPlaying?.isPlaying == true,
+                    strokeColor = albumArtStrokeFor(event),
+                )
+            } else {
+                IconBadge(event = event, badgeSize = badgeSize, iconSize = iconSize, modifier = modifier)
+            }
+        }
+        return
+    }
     val callPhoto = if (showCallPhoto) {
         val onCall = OnCallBus.state.collectAsStateWithLifecycle().value
         event.call?.takeIf { it.showPhoto }?.let { onCall?.photo }
@@ -1344,15 +1392,6 @@ internal fun EventBadge(
     }
 
     when {
-        albumArt != null -> AlbumArt(
-            bitmap = albumArt,
-            size = badgeSize,
-            modifier = modifier,
-            rotate = event.media?.rotateAlbumArt == true,
-            playing = nowPlaying?.isPlaying == true,
-            strokeColor = albumArtStrokeFor(event),
-        )
-
         callPhoto != null -> ContactPhoto(bitmap = callPhoto, size = badgeSize, modifier = modifier)
 
         else -> IconBadge(event = event, badgeSize = badgeSize, iconSize = iconSize, modifier = modifier)
@@ -1994,6 +2033,51 @@ fun rememberRelativeTime(postTimeMs: Long?): String? {
         }
     }
     return relativeTime
+}
+
+/**
+ * Resolves and animates the album palette only when MUSIC asks for it. Extraction is keyed by the
+ * stable track identity plus artwork object identity, never by playback position or clock ticks.
+ */
+@Composable
+private fun rememberMusicPalette(event: IslandEvent?): MusicPalette? {
+    val musicEvent = event?.takeIf { it.media?.useAlbumColours == true } ?: return null
+    val nowPlaying by NowPlayingBus.state.collectAsStateWithLifecycle()
+    val notificationArt by MediaArtBus.state.collectAsStateWithLifecycle()
+    val artwork = nowPlaying?.albumArt
+        ?: notificationArt?.takeIf { it.packageName == nowPlaying?.packageName }?.art
+    val paletteIdentity = mediaPaletteIdentity(musicEvent, nowPlaying)
+    val artworkIdentity = remember(artwork) { artwork?.let(System::identityHashCode) ?: 0 }
+    var artworkAccent by remember(paletteIdentity) { mutableStateOf<Color?>(null) }
+
+    LaunchedEffect(paletteIdentity, artworkIdentity) {
+        artworkAccent = artwork?.let { image ->
+            withContext(Dispatchers.Default) { AppIconColorExtractor.extractDominantColor(image) }
+        }
+    }
+
+    val target = resolveMusicPalette(
+        useAlbumColours = true,
+        fallbackAccent = musicEvent.accent,
+        artworkAccent = artworkAccent,
+    )
+    val accent by animateColorAsState(target.accent, tween(320), label = "musicAlbumAccent")
+    val surface by animateColorAsState(
+        target.surface ?: musicEvent.accent,
+        tween(320),
+        label = "musicAlbumSurface",
+    )
+    val onSurface by animateColorAsState(
+        target.onSurface ?: LocalContentColor.current,
+        tween(320),
+        label = "musicAlbumOnSurface",
+    )
+    val secondary by animateColorAsState(
+        target.secondaryAccent ?: target.accent,
+        tween(320),
+        label = "musicAlbumSecondary",
+    )
+    return MusicPalette(accent, surface, onSurface, secondary)
 }
 
 @Composable
@@ -2727,7 +2811,8 @@ private fun MediaExpandedContent(
     topMarginDp: Int = IslandDimensions.DEFAULT_TOP_MARGIN_DP,
 ) {
     val nowPlaying by NowPlayingBus.state.collectAsStateWithLifecycle()
-    val albumArt = albumArtFor(event, nowPlaying)
+    val media = event.media ?: return
+    val expressive = media.materialExpressivePlayer
     val relativeTime = rememberRelativeTime(event.postTimeMs)
     val headerText = formatNotificationHeader(
         appName = event.appName,
@@ -2735,6 +2820,7 @@ private fun MediaExpandedContent(
         showAppName = appearance.showSourceAppName,
         showTimestamp = appearance.showTimestamp,
     )
+    val trackKey = mediaTrackContentKey(event, nowPlaying)
 
     Box(
         modifier = Modifier
@@ -2748,54 +2834,68 @@ private fun MediaExpandedContent(
                 .padding(top = topMarginDp.dp, bottom = 16.dp),
             verticalArrangement = Arrangement.spacedBy(ACTIONS_ROW_SPACING_DP.dp),
         ) {
-            // Weighted so the transport controls keep their height and the track text gives way.
             Row(
                 modifier = Modifier.weight(1f, fill = false),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                horizontalArrangement = Arrangement.spacedBy(if (expressive) 16.dp else 14.dp),
             ) {
                 EventBadge(
                     event = event,
-                    badgeSize = 44.dp,
-                    iconSize = 26.dp,
+                    badgeSize = if (expressive) 52.dp else 44.dp,
+                    iconSize = if (expressive) 30.dp else 26.dp,
                     showCallPhoto = false,
                 )
-                Column(modifier = Modifier.weight(1f)) {
-                    if (headerText != null) {
+                AnimatedContent(
+                    targetState = trackKey,
+                    modifier = Modifier.weight(1f),
+                    transitionSpec = {
+                        fadeIn(animationSpec = tween(160)) togetherWith fadeOut(animationSpec = tween(160))
+                    },
+                    contentKey = { it },
+                    label = "musicTrackMetadataContent",
+                ) { track ->
+                    Column {
+                        if (headerText != null) {
+                            Text(
+                                text = headerText,
+                                color = event.accent,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
                         Text(
-                            text = headerText,
-                            color = event.accent,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Medium,
+                            text = track.title,
+                            color = LocalContentColor.current,
+                            fontSize = if (expressive) 17.sp else 15.sp,
+                            fontWeight = FontWeight.SemiBold,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
-                    }
-                    Text(
-                        text = event.label,
-                        color = LocalContentColor.current,
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    event.detail?.let { detail ->
-                        Text(
-                            text = detail,
-                            color = LocalContentColor.current.copy(alpha = 0.70f),
-                            fontSize = 12.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
+                        track.artist.takeIf { it.isNotBlank() }?.let { artist ->
+                            Text(
+                                text = artist,
+                                color = LocalContentColor.current.copy(alpha = 0.70f),
+                                fontSize = 12.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
                     }
                 }
             }
 
-            event.media?.takeIf { it.showProgress }?.let {
-                MediaProgressBar(progress = nowPlaying?.progress)
+            if (media.showProgress) {
+                MediaProgressBar(
+                    progress = nowPlaying?.progress,
+                    wavy = media.wavyProgress,
+                    accent = event.accent,
+                    useAccent = media.useAlbumColours,
+                )
             }
 
-            event.media?.takeIf { it.showControls }?.let { media ->
+            if (media.showControls) {
                 MediaControls(
                     isPlaying = nowPlaying?.isPlaying == true,
                     accent = event.accent,
@@ -2803,6 +2903,7 @@ private fun MediaExpandedContent(
                     heightDp = buttonHeightDp,
                     skipStyle = media.skipStyle,
                     playPauseStyle = media.playPauseStyle,
+                    expressive = expressive,
                     onPrevious = { nowPlaying?.transport?.previous() },
                     onPlayPause = { nowPlaying?.transport?.playPause() },
                     onNext = { nowPlaying?.transport?.next() },
@@ -2818,18 +2919,32 @@ private fun MediaExpandedContent(
  * while playback runs and extrapolates from that anchor. A session that publishes no track length
  * (a live stream) gets the indeterminate bar instead, matching the notification tile's.
  */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun MediaProgressBar(progress: MediaProgress?) {
-    val color = MaterialTheme.colorScheme.primary
-    val trackColor = MaterialTheme.colorScheme.primaryContainer
+private fun MediaProgressBar(
+    progress: MediaProgress?,
+    wavy: Boolean,
+    accent: Color,
+    useAccent: Boolean,
+) {
+    val color = if (useAccent) accent else MaterialTheme.colorScheme.primary
+    val trackColor = if (useAccent) accent.copy(alpha = 0.24f) else MaterialTheme.colorScheme.primaryContainer
 
     if (progress?.durationMs == null) {
-        LinearProgressIndicator(
-            modifier = Modifier.fillMaxWidth(),
-            color = color,
-            trackColor = trackColor,
-            strokeCap = ProgressIndicatorDefaults.LinearStrokeCap,
-        )
+        if (wavy) {
+            LinearWavyProgressIndicator(
+                modifier = Modifier.fillMaxWidth(),
+                color = color,
+                trackColor = trackColor,
+            )
+        } else {
+            LinearProgressIndicator(
+                modifier = Modifier.fillMaxWidth(),
+                color = color,
+                trackColor = trackColor,
+                strokeCap = ProgressIndicatorDefaults.LinearStrokeCap,
+            )
+        }
         return
     }
 
@@ -2845,13 +2960,22 @@ private fun MediaProgressBar(progress: MediaProgress?) {
         }
     }
 
-    LinearProgressIndicator(
-        progress = { fraction },
-        modifier = Modifier.fillMaxWidth(),
-        color = color,
-        trackColor = trackColor,
-        strokeCap = ProgressIndicatorDefaults.LinearStrokeCap,
-    )
+    if (wavy) {
+        LinearWavyProgressIndicator(
+            progress = { fraction },
+            modifier = Modifier.fillMaxWidth(),
+            color = color,
+            trackColor = trackColor,
+        )
+    } else {
+        LinearProgressIndicator(
+            progress = { fraction },
+            modifier = Modifier.fillMaxWidth(),
+            color = color,
+            trackColor = trackColor,
+            strokeCap = ProgressIndicatorDefaults.LinearStrokeCap,
+        )
+    }
 }
 
 /**
@@ -2867,20 +2991,25 @@ private fun MediaControls(
     heightDp: Int,
     skipStyle: MusicButtonStyle,
     playPauseStyle: MusicButtonStyle,
+    expressive: Boolean = false,
     onPrevious: () -> Unit,
     onPlayPause: () -> Unit,
     onNext: () -> Unit,
 ) {
+    val skipHeightDp = if (expressive) (heightDp * 0.78f).roundToInt().coerceAtLeast(1) else heightDp
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
+        horizontalArrangement = Arrangement.spacedBy(
+            if (expressive) 16.dp else 12.dp,
+            Alignment.CenterHorizontally,
+        ),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         MediaButton(
             icon = Icons.Rounded.SkipPrevious,
             contentDescription = "Previous track",
             enabled = enabled,
-            heightDp = heightDp,
+            heightDp = skipHeightDp,
             iconSize = 26.dp,
             fill = skipStyle.resolveFill(fallback = null),
             cornerPercent = skipStyle.cornerPercent,
@@ -2902,7 +3031,7 @@ private fun MediaControls(
             icon = Icons.Rounded.SkipNext,
             contentDescription = "Next track",
             enabled = enabled,
-            heightDp = heightDp,
+            heightDp = skipHeightDp,
             iconSize = 26.dp,
             fill = skipStyle.resolveFill(fallback = null),
             cornerPercent = skipStyle.cornerPercent,

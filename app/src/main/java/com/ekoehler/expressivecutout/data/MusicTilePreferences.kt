@@ -91,6 +91,12 @@ data class MusicTileSettings(
     val playPauseButton: MusicButtonStyle = MusicButtonStyle.DEFAULT,
     /** Show a playback progress bar under the transport controls. */
     val showProgress: Boolean = DEFAULT_SHOW_PROGRESS,
+    /** Use the expanded Material Expressive music layout. */
+    val materialExpressivePlayer: Boolean = DEFAULT_MATERIAL_EXPRESSIVE_PLAYER,
+    /** Derive music-only player colours from the current album artwork. */
+    val useAlbumColours: Boolean = DEFAULT_USE_ALBUM_COLOURS,
+    /** Draw the official Material Expressive wavy playback progress indicator. */
+    val wavyProgress: Boolean = DEFAULT_WAVY_PROGRESS,
 ) {
     companion object {
         const val DEFAULT_SHOW_ALBUM_ART = true
@@ -100,8 +106,25 @@ data class MusicTileSettings(
         const val DEFAULT_VISIBLE_IN_PLAYER_APP = true
         const val DEFAULT_SHOW_CONTROLS = true
         const val DEFAULT_SHOW_PROGRESS = false
+        const val DEFAULT_MATERIAL_EXPRESSIVE_PLAYER = false
+        const val DEFAULT_USE_ALBUM_COLOURS = false
+        const val DEFAULT_WAVY_PROGRESS = false
     }
 }
+
+/** The expressive-only fields exported with music settings. */
+internal fun MusicTileSettings.expressiveJsonValues(): Map<String, Boolean> = mapOf(
+    "materialExpressivePlayer" to materialExpressivePlayer,
+    "useAlbumColours" to useAlbumColours,
+    "wavyProgress" to wavyProgress,
+)
+
+/** Applies expressive JSON values while preserving existing values for absent legacy keys. */
+internal fun MusicTileSettings.withExpressiveJsonValues(values: Map<String, Boolean>): MusicTileSettings = copy(
+    materialExpressivePlayer = values["materialExpressivePlayer"] ?: materialExpressivePlayer,
+    useAlbumColours = values["useAlbumColours"] ?: useAlbumColours,
+    wavyProgress = values["wavyProgress"] ?: wavyProgress,
+)
 
 /** Persists the music tile's display options (album art, expanded controls) and button styling. */
 class MusicTilePreferences(private val context: Context) : JsonSerializable {
@@ -131,6 +154,10 @@ class MusicTilePreferences(private val context: Context) : JsonSerializable {
                 filled = prefs[PLAY_PAUSE_FILLED] ?: MusicButtonStyle.DEFAULT_FILLED,
             ),
             showProgress = prefs[SHOW_PROGRESS] ?: MusicTileSettings.DEFAULT_SHOW_PROGRESS,
+            materialExpressivePlayer = prefs[MATERIAL_EXPRESSIVE_PLAYER]
+                ?: MusicTileSettings.DEFAULT_MATERIAL_EXPRESSIVE_PLAYER,
+            useAlbumColours = prefs[USE_ALBUM_COLOURS] ?: MusicTileSettings.DEFAULT_USE_ALBUM_COLOURS,
+            wavyProgress = prefs[WAVY_PROGRESS] ?: MusicTileSettings.DEFAULT_WAVY_PROGRESS,
         )
     }
 
@@ -153,6 +180,7 @@ class MusicTilePreferences(private val context: Context) : JsonSerializable {
             put("visibleInPlayerApp", s.visibleInPlayerApp)
             put("showControls", s.showControls)
             put("showProgress", s.showProgress)
+            s.expressiveJsonValues().forEach { (key, value) -> put(key, value) }
             put("skipButton", s.skipButton.toJsonObject())
             put("playPauseButton", s.playPauseButton.toJsonObject())
         }.toString()
@@ -177,6 +205,13 @@ class MusicTilePreferences(private val context: Context) : JsonSerializable {
             if (obj.has("visibleInPlayerApp")) prefs[VISIBLE_IN_PLAYER_APP] = obj.getBoolean("visibleInPlayerApp")
             if (obj.has("showControls")) prefs[SHOW_CONTROLS] = obj.getBoolean("showControls")
             if (obj.has("showProgress")) prefs[SHOW_PROGRESS] = obj.getBoolean("showProgress")
+            if (obj.has("materialExpressivePlayer")) {
+                prefs[MATERIAL_EXPRESSIVE_PLAYER] = obj.getBoolean("materialExpressivePlayer")
+            }
+            if (obj.has("useAlbumColours")) {
+                prefs[USE_ALBUM_COLOURS] = obj.getBoolean("useAlbumColours")
+            }
+            if (obj.has("wavyProgress")) prefs[WAVY_PROGRESS] = obj.getBoolean("wavyProgress")
 
             obj.optJSONObject("skipButton")?.applyButton(prefs, SKIP_COLOR, SKIP_OPACITY, SKIP_CORNER, SKIP_FILLED)
             obj.optJSONObject("playPauseButton")
@@ -275,6 +310,18 @@ class MusicTilePreferences(private val context: Context) : JsonSerializable {
         it[SHOW_PROGRESS] = enabled
     }
 
+    suspend fun setMaterialExpressivePlayer(enabled: Boolean) = context.musicTileDataStore.edit {
+        it[MATERIAL_EXPRESSIVE_PLAYER] = enabled
+    }
+
+    suspend fun setUseAlbumColours(enabled: Boolean) = context.musicTileDataStore.edit {
+        it[USE_ALBUM_COLOURS] = enabled
+    }
+
+    suspend fun setWavyProgress(enabled: Boolean) = context.musicTileDataStore.edit {
+        it[WAVY_PROGRESS] = enabled
+    }
+
     /**
      * Clamps to the range the corner slider offers, so an imported settings file can't leave a
      * shape the UI has no way to correct.
@@ -327,5 +374,8 @@ class MusicTilePreferences(private val context: Context) : JsonSerializable {
         val PLAY_PAUSE_CORNER = intPreferencesKey("play_pause_button_corner_percent")
         val PLAY_PAUSE_FILLED = booleanPreferencesKey("play_pause_button_filled")
         val SHOW_PROGRESS = booleanPreferencesKey("show_current_progress")
+        val MATERIAL_EXPRESSIVE_PLAYER = booleanPreferencesKey("material_expressive_player")
+        val USE_ALBUM_COLOURS = booleanPreferencesKey("use_album_colours")
+        val WAVY_PROGRESS = booleanPreferencesKey("wavy_progress")
     }
 }

@@ -189,6 +189,27 @@ internal fun MusicTileScreen(
             checked = settings.showProgress,
             onCheckedChange = viewModel::setMusicShowProgress,
         )
+        SettingsToggleCard(
+            shape = RoundedCornerShape(size = 24.dp),
+            title = stringResource(R.string.music_material_expressive_title),
+            description = stringResource(R.string.music_material_expressive_desc),
+            checked = settings.materialExpressivePlayer,
+            onCheckedChange = viewModel::setMusicMaterialExpressivePlayer,
+        )
+        SettingsToggleCard(
+            shape = RoundedCornerShape(size = 24.dp),
+            title = stringResource(R.string.music_album_colours_title),
+            description = stringResource(R.string.music_album_colours_desc),
+            checked = settings.useAlbumColours,
+            onCheckedChange = viewModel::setMusicUseAlbumColours,
+        )
+        SettingsToggleCard(
+            shape = RoundedCornerShape(size = 24.dp),
+            title = stringResource(R.string.music_wavy_progress_title),
+            description = stringResource(R.string.music_wavy_progress_desc),
+            checked = settings.wavyProgress,
+            onCheckedChange = viewModel::setMusicWavyProgress,
+        )
     }
 }
 

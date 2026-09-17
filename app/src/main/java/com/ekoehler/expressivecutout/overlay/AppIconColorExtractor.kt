@@ -10,6 +10,8 @@ import android.graphics.drawable.Drawable
 import android.os.Build
 import android.util.LruCache
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.core.graphics.createBitmap
 
 /**
@@ -65,6 +67,10 @@ object AppIconColorExtractor {
         drawable.draw(canvas)
         return bitmap
     }
+
+    /** Extracts the same vibrant dominant colour from an already-decoded artwork bitmap. */
+    internal fun extractDominantColor(bitmap: ImageBitmap): Color? =
+        extractDominantColor(bitmap.asAndroidBitmap())?.let { Color(it) }
 
     /**
      * Extracts the primary vibrant/dominant branding color from a [Bitmap].

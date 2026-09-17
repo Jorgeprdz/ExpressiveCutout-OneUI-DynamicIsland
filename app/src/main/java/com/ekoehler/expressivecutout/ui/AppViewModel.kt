@@ -910,6 +910,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         musicTilePreferences.setShowProgress(enabled)
     }
 
+    fun setMusicMaterialExpressivePlayer(enabled: Boolean) = viewModelScope.launch {
+        musicTilePreferences.setMaterialExpressivePlayer(enabled)
+    }
+
+    fun setMusicUseAlbumColours(enabled: Boolean) = viewModelScope.launch {
+        musicTilePreferences.setUseAlbumColours(enabled)
+    }
+
+    fun setMusicWavyProgress(enabled: Boolean) = viewModelScope.launch {
+        musicTilePreferences.setWavyProgress(enabled)
+    }
+
     fun setDismissNotifications(enabled: Boolean) = viewModelScope.launch {
         behaviourPreferences.setDismissNotifications(enabled)
     }

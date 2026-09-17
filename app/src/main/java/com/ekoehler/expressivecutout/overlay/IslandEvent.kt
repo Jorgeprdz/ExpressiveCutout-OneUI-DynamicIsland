@@ -207,6 +207,12 @@ data class MediaTileOptions(
     val showControls: Boolean,
     /** Show the playback progress bar under the controls. */
     val showProgress: Boolean = false,
+    /** Use the expanded Material Expressive music layout. */
+    val materialExpressivePlayer: Boolean = false,
+    /** Derive the music player's palette from its current artwork. */
+    val useAlbumColours: Boolean = false,
+    /** Use the official Material Expressive wavy progress indicator. */
+    val wavyProgress: Boolean = false,
     /** Look of the previous / next (skip) buttons. */
     val skipStyle: MusicButtonStyle = MusicButtonStyle.DEFAULT,
     /** Look of the central play / pause button. */

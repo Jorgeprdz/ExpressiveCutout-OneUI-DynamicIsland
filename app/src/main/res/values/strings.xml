@@ -596,6 +596,12 @@
     <string name="bgColor_oled_desc">Use pure black for lower consuption on OLED screens</string>
     <string name="music_progress_title">Show progress</string>
     <string name="music_progress_description">Display a playback progress bar under the controls</string>
+    <string name="music_material_expressive_title">Material Expressive player</string>
+    <string name="music_material_expressive_desc">Use a more expressive layout for expanded music playback.</string>
+    <string name="music_album_colours_title">Use album colours</string>
+    <string name="music_album_colours_desc">Derive the music player accent and surface colours from the current album artwork.</string>
+    <string name="music_wavy_progress_title">Wavy progress</string>
+    <string name="music_wavy_progress_desc">Use the Material Expressive wavy playback progress indicator.</string>
     <string name="behaviour_dismissNotifs_title">Automatically dismiss notifications</string>
     <string name="behaviour_dismissNotifs_desc">Keep notifications out of the shade while the island shows them. Ignore one and it comes back a minute later, so nothing is lost</string>
     <string name="behaviour_displayWhileDnd_title">Display while Do not disturb</string>
