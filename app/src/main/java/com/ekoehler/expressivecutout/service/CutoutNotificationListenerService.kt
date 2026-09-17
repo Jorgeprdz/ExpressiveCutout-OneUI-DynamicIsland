@@ -4,11 +4,13 @@ import android.app.KeyguardManager
 import android.app.Notification
 import android.content.ComponentName
 import android.content.Context
+import android.media.session.MediaSession
 import android.os.PowerManager
 import android.os.SystemClock
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
+import androidx.core.os.BundleCompat
 import com.ekoehler.expressivecutout.core.CutoutSignal
 import com.ekoehler.expressivecutout.core.IslandEventBus
 import com.ekoehler.expressivecutout.core.MediaArt
@@ -22,6 +24,7 @@ import com.ekoehler.expressivecutout.core.live.LiveActivityRegistry
 import com.ekoehler.expressivecutout.data.BehaviourPreferences
 import com.ekoehler.expressivecutout.data.BehaviourSettings
 import com.ekoehler.expressivecutout.events.CallNotificationParser
+import com.ekoehler.expressivecutout.events.NotificationMediaSessionRegistry
 import com.ekoehler.expressivecutout.events.TimerNotificationParser
 import com.ekoehler.expressivecutout.notifications.live.NotificationLiveActivityBridge
 import com.ekoehler.expressivecutout.notifications.live.NotificationLiveActivityProcessor
@@ -116,30 +119,35 @@ class CutoutNotificationListenerService : NotificationListenerService() {
     /** Closes the mute window even if a fetch-back never lands. */
     private var unmuteJob: Job? = null
 
-    /** Publishes the listener, starts settings observation, and restores current media art. */
+    /** Publishes the listener, starts settings observation, and restores current media state. */
     override fun onListenerConnected() {
         instance = this
         _bound.value = true
         observeBehaviour()
-        seedMediaArt()
+        seedMediaState()
     }
 
-    /** Republishes cover art from media notifications that predate this listener bind. */
-    private fun seedMediaArt() {
+    /** Republishes media-session fallbacks and cover art from notifications that predate this bind. */
+    private fun seedMediaState() {
         val active = runCatching { activeNotifications }.getOrNull() ?: return
-        active.sortedBy { it.postTime }.forEach { it.publishMediaArt() }
+        active.sortedBy { it.postTime }.forEach { notification ->
+            notification.publishMediaSessionFallback()
+            notification.publishMediaArt()
+        }
     }
 
     /** Clears the published binding state when Android disconnects this listener. */
     override fun onListenerDisconnected() {
         if (instance === this) instance = null
         _bound.value = false
+        NotificationMediaSessionRegistry.clear()
     }
 
     /** Releases process-local listener state that must not survive service destruction. */
     override fun onDestroy() {
         if (instance === this) instance = null
         _bound.value = false
+        NotificationMediaSessionRegistry.clear()
         if (mutedReturns > 0) setEffectsMuted(false)
         alerter.stop()
         scope.cancel()
@@ -356,7 +364,8 @@ class CutoutNotificationListenerService : NotificationListenerService() {
             return
         }
 
-        // Album art is an independent media side effect and must publish before media routing returns.
+        // Media side effects must publish before MEDIA routing returns.
+        notification.publishMediaSessionFallback()
         notification.publishMediaArt()
 
         if (pendingCancel.consume(notification.key)) {
@@ -463,6 +472,7 @@ class CutoutNotificationListenerService : NotificationListenerService() {
     override fun onNotificationRemoved(sbn: StatusBarNotification?) {
         val removed = sbn
         if (removed != null) {
+            NotificationMediaSessionRegistry.remove(removed.key)
             liveActivityBridge.remove(removed.packageName, removed.key)
             if (CallNotificationParser.isCall(removed)) {
                 LiveActivityRegistry.coordinator.remove(
@@ -593,6 +603,26 @@ class CutoutNotificationListenerService : NotificationListenerService() {
             resultKey = freeForm.resultKey,
             remoteInputs = inputs,
             hint = freeForm.label?.toString(),
+        )
+    }
+
+    /** Publishes a media notification's MediaSession token as a playback-monitor fallback. */
+    private fun StatusBarNotification.publishMediaSessionFallback() {
+        val token = runCatching {
+            notification.extras?.let { extras ->
+                BundleCompat.getParcelable(
+                    extras,
+                    Notification.EXTRA_MEDIA_SESSION,
+                    MediaSession.Token::class.java,
+                )
+            }
+        }.onFailure {
+            Log.w(TAG, "Failed to read media-session token from notification $key", it)
+        }.getOrNull()
+        NotificationMediaSessionRegistry.update(
+            notificationKey = key,
+            packageName = packageName,
+            token = token,
         )
     }
 

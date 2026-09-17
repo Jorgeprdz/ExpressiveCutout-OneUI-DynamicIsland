@@ -38,9 +38,8 @@ import kotlinx.coroutines.launch
  * Watches the device's active media sessions and drives the music tile. It keeps [NowPlayingBus]
  * in sync with the current session (title, artist, album art, play/pause state and a transport
  * handle) and republishes a [CutoutSignal.Music] whenever playback starts or the track changes, so
- * the island pops up. Access to media sessions is granted by the app's already-required
- * notification-listener binding — no extra permission is needed. Like [SystemEventMonitor], all
- * registration is dynamic and lives and dies with the hosting service.
+ * the island pops up. MediaSessionManager remains the preferred source; notification-carried
+ * MediaSession tokens are watched as a fallback for OEMs that omit a player from getActiveSessions.
  */
 class MediaPlaybackMonitor(private val context: Context) {
 
@@ -50,10 +49,16 @@ class MediaPlaybackMonitor(private val context: Context) {
     private val appPreferences = AppPreferences(context)
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
-    /** Controllers we're currently watching, paired with the callback registered on each. */
+    /** Framework-discovered controllers we're currently watching, paired with their callback. */
     private val watched = mutableMapOf<MediaController, MediaController.Callback>()
 
-    /** Enabled state of dynamic tiles */
+    /** Notification-backed candidates last published by the notification listener. */
+    private var fallbackSessions: Map<String, NotificationMediaSessionCandidate> = emptyMap()
+
+    /** Notification-backed controllers currently watched because no active equivalent exists. */
+    private val fallbackWatched = mutableMapOf<String, FallbackWatcher>()
+
+    /** Enabled state of dynamic tiles. */
     private var tileEnabled: Map<DynamicTile, Boolean> = emptyMap()
 
     /** Packages the user muted on the Apps screen; their sessions are ignored outright. */
@@ -74,11 +79,10 @@ class MediaPlaybackMonitor(private val context: Context) {
         }
 
     /**
-     * Begins watching the active media sessions and the tile's own enabled flag. Does nothing
-     * without notification access, since the session manager is unavailable until then.
+     * Begins watching active sessions, notification-backed fallback sessions, and tile/app settings.
+     * Failure to query MediaSessionManager no longer disables the notification fallback path.
      */
     fun start() {
-        val manager = sessionManager ?: return
         scope.launch {
             dynamicTilePreferences.enabled.collect { enabled ->
                 tileEnabled = enabled
@@ -92,10 +96,23 @@ class MediaPlaybackMonitor(private val context: Context) {
                 sync()
             }
         }
+        scope.launch {
+            NotificationMediaSessionRegistry.sessions.collect { sessions ->
+                fallbackSessions = sessions
+                rebindFallback()
+            }
+        }
+
+        val manager = sessionManager ?: run {
+            Log.w(TAG, "MediaSessionManager unavailable; using notification media-session fallback")
+            return
+        }
         runCatching {
             manager.addOnActiveSessionsChangedListener(sessionsListener, listenerComponent)
             rebind(manager.getActiveSessions(listenerComponent))
-        }.onFailure { Log.w(TAG, "Media session access unavailable", it) }
+        }.onFailure {
+            Log.w(TAG, "Media session access unavailable; using notification media-session fallback", it)
+        }
     }
 
     /**
@@ -106,6 +123,10 @@ class MediaPlaybackMonitor(private val context: Context) {
         sessionManager?.let { runCatching { it.removeOnActiveSessionsChangedListener(sessionsListener) } }
         watched.forEach { (controller, callback) -> controller.unregisterCallback(callback) }
         watched.clear()
+        fallbackWatched.values.forEach { watcher ->
+            watcher.controller.unregisterCallback(watcher.callback)
+        }
+        fallbackWatched.clear()
         scope.coroutineContext.cancelChildren()
         clearPendingShow()
         clearLiveMusic()
@@ -139,13 +160,62 @@ class MediaPlaybackMonitor(private val context: Context) {
             watched[controller] = callback
             controller.registerCallback(callback)
         }
+        rebindFallback()
         sync()
     }
 
-    /** Stops watching one controller and re-syncs, for a session that has gone away. */
+    /** Stops watching one framework controller and allows a stored fallback to take over if needed. */
     private fun detach(controller: MediaController) {
         watched.remove(controller)?.let { controller.unregisterCallback(it) }
+        rebindFallback()
         sync()
+    }
+
+    /**
+     * Reconciles notification-backed tokens with the framework sessions. Tokens already represented
+     * by MediaSessionManager are deliberately not watched twice.
+     */
+    private fun rebindFallback() {
+        val activeIdentities = watched.keys.mapTo(mutableSetOf()) { it.sessionIdentity }
+        val desired = fallbackSessions.filterValues { it.identity !in activeIdentities }
+
+        fallbackWatched.keys.toList().forEach { notificationKey ->
+            val existing = fallbackWatched[notificationKey] ?: return@forEach
+            val replacement = desired[notificationKey]
+            if (replacement == null || replacement.identity != existing.candidate.identity) {
+                detachFallback(notificationKey, resync = false)
+            }
+        }
+
+        desired.forEach { (notificationKey, candidate) ->
+            if (fallbackWatched.containsKey(notificationKey)) return@forEach
+            val controller = runCatching { MediaController(context, candidate.token) }
+                .onFailure { Log.w(TAG, "Failed to create fallback media controller", it) }
+                .getOrNull() ?: return@forEach
+            val callback = object : MediaController.Callback() {
+                override fun onPlaybackStateChanged(state: PlaybackState?) = sync()
+                override fun onMetadataChanged(metadata: MediaMetadata?) = sync()
+                override fun onSessionDestroyed() {
+                    NotificationMediaSessionRegistry.remove(notificationKey)
+                    detachFallback(notificationKey)
+                }
+            }
+            val registered = runCatching { controller.registerCallback(callback) }
+                .onFailure { Log.w(TAG, "Failed to watch fallback media controller", it) }
+                .isSuccess
+            if (registered) {
+                fallbackWatched[notificationKey] = FallbackWatcher(candidate, controller, callback)
+            }
+        }
+        sync()
+    }
+
+    /** Stops watching one notification-backed controller. */
+    private fun detachFallback(notificationKey: String, resync: Boolean = true) {
+        fallbackWatched.remove(notificationKey)?.let { watcher ->
+            watcher.controller.unregisterCallback(watcher.callback)
+        }
+        if (resync) sync()
     }
 
     /**
@@ -167,23 +237,54 @@ class MediaPlaybackMonitor(private val context: Context) {
             pkg.contains("gemini")
     }
 
+    /** Whether a controller remains eligible after app and assistant filtering. */
+    private fun isEligible(controller: MediaController): Boolean {
+        if (controller.packageName in disabledApps) return false
+        if (isAssistantPackage(controller.packageName)) {
+            return tileEnabled[DynamicTile.ASSISTANT] != false
+        }
+        return true
+    }
+
     /**
-     * Recompute the surfaced session: prefer one that's actually playing, else any active one.
-     * Publishes its live state to [NowPlayingBus] and pops the island when a new track starts.
+     * Recompute the surfaced session. Framework sessions are primary; notification-backed sessions
+     * are considered only when no valid framework candidate exists.
      */
     private fun sync() {
-        val validControllers = watched.keys.filter { controller ->
-            if (controller.packageName in disabledApps) {
-                false
-            } else if (isAssistantPackage(controller.packageName)) {
-                // If Assistant tile is turned off, ignore assistant media session entirely
-                tileEnabled[DynamicTile.ASSISTANT] != false
-            } else {
-                true
+        val controllerCandidates = buildList {
+            watched.keys.filter(::isEligible).forEach { controller ->
+                add(
+                    ControllerCandidate(
+                        selection = MediaSessionSelectionCandidate(
+                            identity = controller.sessionIdentity,
+                            source = MediaSessionCandidateSource.ACTIVE,
+                            isPlaying = controller.isPlaying,
+                        ),
+                        controller = controller,
+                    ),
+                )
             }
+            fallbackWatched.values
+                .map { it.controller }
+                .filter(::isEligible)
+                .forEach { controller ->
+                    add(
+                        ControllerCandidate(
+                            selection = MediaSessionSelectionCandidate(
+                                identity = controller.sessionIdentity,
+                                source = MediaSessionCandidateSource.NOTIFICATION_FALLBACK,
+                                isPlaying = controller.isPlaying,
+                            ),
+                            controller = controller,
+                        ),
+                    )
+                }
         }
 
-        val primary = validControllers.firstOrNull { it.isPlaying } ?: validControllers.firstOrNull()
+        val selected = selectMediaSessionCandidate(controllerCandidates.map { it.selection })
+        val primary = selected?.let { target ->
+            controllerCandidates.firstOrNull { it.selection == target }?.controller
+        }
         if (primary == null) {
             NowPlayingBus.update(null)
             clearPendingShow()
@@ -207,7 +308,7 @@ class MediaPlaybackMonitor(private val context: Context) {
         val artist = rawArtist
 
         if (isAssistantPackage(primary.packageName)) {
-            // Assistant sessions are handled exclusively via NotificationListenerService
+            // Assistant sessions are handled exclusively via NotificationListenerService.
             NowPlayingBus.update(null)
             clearPendingShow()
             clearLiveMusic()
@@ -271,6 +372,9 @@ class MediaPlaybackMonitor(private val context: Context) {
 
     private val MediaController.isPlaying: Boolean
         get() = playbackState?.state == PlaybackState.STATE_PLAYING
+
+    private val MediaController.sessionIdentity: String
+        get() = mediaSessionIdentity(packageName, sessionToken.hashCode())
 
     /**
      * The session's position anchor. [PlaybackState.getPosition] is a sample taken at
@@ -336,6 +440,17 @@ class MediaPlaybackMonitor(private val context: Context) {
             runCatching { controller.transportControls.skipToNext() }
         }
     }
+
+    private data class FallbackWatcher(
+        val candidate: NotificationMediaSessionCandidate,
+        val controller: MediaController,
+        val callback: MediaController.Callback,
+    )
+
+    private data class ControllerCandidate(
+        val selection: MediaSessionSelectionCandidate,
+        val controller: MediaController,
+    )
 
     private companion object {
         const val TAG = "MediaPlaybackMonitor"
