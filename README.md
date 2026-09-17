@@ -1,3 +1,37 @@
+<!-- ONEUI-FORK-BANNER -->
+
+> [!IMPORTANT]
+> ## Expressive Cutout for One UI
+>
+> This repository contains an experimental Samsung One UI-focused fork of
+> [Expressive Cutout](https://github.com/EvanKoe/expressive-cutout).
+>
+> Current tested target: **Samsung Galaxy S25 / Android 16 / One UI**.
+>
+> This fork adds and refines:
+>
+> - Live Activity-style primary and satellite scheduling
+> - a Material Expressive MUSIC experience
+> - album artwork, track transitions and album-derived colours
+> - Linear and Wavy progress indicators
+> - previous / play-pause / next controls
+> - tap and drag media seeking through the real MediaSession
+> - MediaSession fallback for players such as Spotify and remote playback
+> - transient Status Bar icon suppression during new-notification arrival
+> - automatic restoration of the user's persistent Status Bar preferences
+> - Shizuku-backed Status Bar integration without full immersive mode
+>
+> **Known limitation:** Samsung's separate media playback pill may remain visible.
+> It is intentionally not disabled by breaking the MediaSession or lockscreen Now Bar.
+>
+> This project is not affiliated with Samsung.
+>
+> **Download this fork:** [Latest release](https://github.com/Jorgeprdz/ExpressiveCutout-OneUI-DynamicIsland/releases/latest)
+>
+> Original project and credits remain below.
+
+---
+
 <div align="center">
 
 <img width="1280" height="640" alt="Frame 25" src="https://github.com/user-attachments/assets/d801de28-eac6-4ffd-8474-55d9a8af4dc3" />
@@ -16,7 +50,7 @@ colours, and all customisable down to the corner radius.
 It runs entirely on your device. The app has no internet permission at all, so nothing can
 be uploaded: no accounts, no analytics, no tracking.
 
-[![Download the latest release](https://img.shields.io/badge/Download-latest%20release-005AC1?style=for-the-badge&logo=github&logoColor=white)](https://github.com/EvanKoe/expressive-cutout/releases)
+[![Download the latest release](https://img.shields.io/badge/Download-latest%20release-005AC1?style=for-the-badge&logo=github&logoColor=white)](https://github.com/Jorgeprdz/ExpressiveCutout-OneUI-DynamicIsland/releases/latest)
 [![Stars](https://img.shields.io/github/stars/EvanKoe/expressive-cutout?style=for-the-badge)](https://github.com/EvanKoe/expressive-cutout/stargazers)
 [![License](https://img.shields.io/badge/license-GPLv3-blue?style=for-the-badge)](LICENSE)
 [![Kotlin](https://img.shields.io/badge/Kotlin-Jetpack%20Compose-7F52FF?style=for-the-badge&logo=kotlin&logoColor=white)](https://kotlinlang.org)
@@ -51,7 +85,7 @@ be uploaded: no accounts, no analytics, no tracking.
 
 <div align="center">
 
-[![Download the latest release](https://img.shields.io/badge/Download-latest%20release-005AC1?style=for-the-badge&logo=github&logoColor=white)](https://github.com/EvanKoe/expressive-cutout/releases)
+[![Download the latest release](https://img.shields.io/badge/Download-latest%20release-005AC1?style=for-the-badge&logo=github&logoColor=white)](https://github.com/Jorgeprdz/ExpressiveCutout-OneUI-DynamicIsland/releases/latest)
 
 </div>
 
