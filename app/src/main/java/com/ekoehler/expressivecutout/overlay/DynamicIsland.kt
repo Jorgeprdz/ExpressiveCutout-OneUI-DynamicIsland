@@ -292,7 +292,7 @@ private const val MEDIA_PROGRESS_TOUCH_TARGET_DP = 32
 private const val MEDIA_CONTENT_ROW_HEIGHT_DP = 44
 
 /** Expressive uses a 52dp cover plus enough room for header/title/artist without clipping. */
-private const val MEDIA_EXPRESSIVE_CONTENT_ROW_HEIGHT_DP = 60
+private const val MEDIA_EXPRESSIVE_CONTENT_ROW_HEIGHT_DP = 72
 
 internal fun mediaContentRowHeightDp(expressive: Boolean): Int =
     if (expressive) MEDIA_EXPRESSIVE_CONTENT_ROW_HEIGHT_DP else MEDIA_CONTENT_ROW_HEIGHT_DP

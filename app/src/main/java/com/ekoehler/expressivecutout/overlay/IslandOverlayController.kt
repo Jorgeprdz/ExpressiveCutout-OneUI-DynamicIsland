@@ -397,6 +397,7 @@ class IslandOverlayController(private val context: Context) {
         mirroredKey?.let { CutoutNotificationListenerService.release(it) }
         dismissJob?.cancel()
         windowResizeJob?.cancel()
+        StatusBarIconController.clearTransientStatusIconSuppression()
         runCatching { context.unregisterReceiver(lockReceiver) }
         removeOverlay()
         lifecycleOwner.onDestroy()
@@ -437,6 +438,7 @@ class IslandOverlayController(private val context: Context) {
 
         when {
             shouldHide && !overlayHidden -> {
+                StatusBarIconController.clearTransientStatusIconSuppression()
                 overlayHidden = true
                 dismissJob?.cancel()
                 windowResizeJob?.cancel()
@@ -756,6 +758,9 @@ class IslandOverlayController(private val context: Context) {
     private fun observeBehaviour() = scope.launch {
         behaviourPreferences.settings.collect {
             behaviourState.value = it
+            if (!it.cutoutEnabled) {
+                StatusBarIconController.clearTransientStatusIconSuppression()
+            }
             // Toggling "hide on lockscreen" (or first load while already locked) must take effect now.
             applyLockVisibility()
         }
@@ -1002,6 +1007,9 @@ class IslandOverlayController(private val context: Context) {
     private fun observeOnCall() = scope.launch {
         OnCallBus.state.collect { call ->
             callActive = call != null
+            if (callActive) {
+                StatusBarIconController.clearTransientStatusIconSuppression()
+            }
             pruneSatellite()
             if (call == null) {
                 lastCallEvent = null
@@ -1657,7 +1665,12 @@ class IslandOverlayController(private val context: Context) {
             // The expanded music tile ignores the configured expanded height and sizes itself from
             // its own content, so the window has to follow it rather than the layout.
             expanded && event?.media != null ->
-                layout.expanded.copy(heightDp = mediaExpandedBaseHeightDp(layout.expanded.topMarginDp))
+                layout.expanded.copy(
+                    heightDp = mediaExpandedBaseHeightDp(
+                        topMarginDp = layout.expanded.topMarginDp,
+                        expressive = event.media.materialExpressivePlayer,
+                    ),
+                )
             expanded -> layout.expanded
             event?.call != null -> {
                 val incoming = OnCallBus.state.value?.ongoing == false
@@ -1737,7 +1750,11 @@ class IslandOverlayController(private val context: Context) {
             } else {
                 0
             }
-        val progressExtra = if (event?.media?.showProgress == true) expandedMediaProgressExtraDp() else 0
+        val progressExtra = if (event?.media?.showProgress == true) {
+            expandedMediaProgressExtraDp(wavy = event.media.wavyProgress)
+        } else {
+            0
+        }
         return controlsExtra + progressExtra
     }
 
@@ -1868,9 +1885,18 @@ class IslandOverlayController(private val context: Context) {
             visibleStableIds = visibleStableIds,
         )
         liveActivityPulseState = result.state
-        if (result.shouldPulse) {
-            StatusBarIconController.pulseNotificationIcons()
+        if (result.shouldPulse && filteredSlots.primary?.kind != LiveActivity.Kind.CALL) {
+            pulseStatusBarArrival()
         }
+    }
+
+    /** Temporarily clears ordinary status icons while a real island arrival enters. */
+    private fun pulseStatusBarArrival() {
+        val behaviour = behaviourState.value
+        if (!behaviour.cutoutEnabled || overlayHidden || previewPinned || callActive) return
+        val durationMs = (behaviour.animationDurationMs.toLong() + STATUS_BAR_ARRIVAL_SETTLE_MS)
+            .coerceAtLeast(STATUS_BAR_MIN_ARRIVAL_PULSE_MS)
+        StatusBarIconController.pulseStatusIcons(durationMs)
     }
 
     /** User/app filters may hide a slot, but never promote/re-rank another activity here. */
@@ -2210,6 +2236,10 @@ class IslandOverlayController(private val context: Context) {
                 return@collect
             }
 
+            if (signal is CutoutSignal.Notification) {
+                pulseStatusBarArrival()
+            }
+
             // Park whatever the pill is losing in the bubble, carrying its own deadline over, so a
             // pinned live tile stays visible rather than disappearing until livePillToReturnTo
             // brings it back. Cleared straight after: scheduleDismiss re-arms it below for a
@@ -2306,6 +2336,9 @@ class IslandOverlayController(private val context: Context) {
         }
         val wasExpanded = expanded
         expanded = targetExpanded
+        if (wasExpanded && !targetExpanded) {
+            StatusBarIconController.clearTransientStatusIconSuppression()
+        }
         // An event tapped out of the bubble borrowed the pill for as long as it was open; give it back.
         if (!targetExpanded && restoreSlotsOnCollapse) {
             restoreSlotsOnCollapse = false
@@ -2485,6 +2518,7 @@ class IslandOverlayController(private val context: Context) {
      */
     private fun dismissIsland() {
         dismissJob?.cancel()
+        StatusBarIconController.clearTransientStatusIconSuppression()
         restoreSlotsOnCollapse = false
         forcedExpanded.value = null
         expanded = false
@@ -2791,6 +2825,8 @@ class IslandOverlayController(private val context: Context) {
          * Hold the (larger) expanded window size until the pill has finished its ~220ms collapse
          * animation, then shrink — so the collapse never clips and the freed area becomes tappable.
          */
+        const val STATUS_BAR_MIN_ARRIVAL_PULSE_MS = 400L
+        const val STATUS_BAR_ARRIVAL_SETTLE_MS = 220L
         const val WINDOW_SHRINK_DELAY_MS = 300L
 
         /**

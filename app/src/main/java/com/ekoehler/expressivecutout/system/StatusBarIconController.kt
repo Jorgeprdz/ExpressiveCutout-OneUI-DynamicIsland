@@ -54,9 +54,9 @@ object StatusBarIconController {
     @Volatile
     private var persistentFlags = StatusBarFlagState()
 
-    /** In-memory notification-icon suppression layered over [persistentFlags]. */
+    /** In-memory status-icon suppression layered over [persistentFlags]. */
     @Volatile
-    private var transientHideNotificationIcons = false
+    private var transientHideStatusIcons = false
 
     /** Package identity supplied to `IStatusBarService.disable`, seeded once from [start]. */
     @Volatile
@@ -66,7 +66,7 @@ object StatusBarIconController {
     @Volatile
     private var applicationScope: CoroutineScope? = null
 
-    /** Monotonic expiry of the current transient notification-icon pulse, or null when inactive. */
+    /** Monotonic expiry of the current transient status-icon pulse, or null when inactive. */
     @Volatile
     private var pulseDeadlineElapsedRealtimeMs: Long? = null
 
@@ -119,7 +119,7 @@ object StatusBarIconController {
 
     /**
      * Applies or clears the persistent status-bar wishes while preserving any active transient
-     * notification-icon pulse. Kept as the existing public API for callers outside [start].
+     * status-icon pulse. Kept as the existing public API for callers outside [start].
      */
     @Synchronized
     fun apply(
@@ -140,12 +140,12 @@ object StatusBarIconController {
     }
 
     /**
-     * Starts or extends the one transient notification-icon suppression lease. The deadline uses
+     * Starts or extends the one transient status-icon suppression lease. The deadline uses
      * [SystemClock.elapsedRealtime] so wall-clock changes cannot shorten or lengthen the pulse. A
      * missing Shizuku grant simply skips the optional effect and never asks the user for permission.
      */
     @Synchronized
-    fun pulseNotificationIcons(
+    fun pulseStatusIcons(
         durationMs: Long = StatusBarPulseDeadline.DEFAULT_LIVE_ACTIVITY_PULSE_MS,
     ): Boolean {
         if (durationMs <= 0L) {
@@ -163,7 +163,7 @@ object StatusBarIconController {
         ) ?: return false
         pulseDeadlineElapsedRealtimeMs = deadline
 
-        if (!setTransientNotificationIconSuppression(active = true)) {
+        if (!setTransientStatusIconSuppression(active = true)) {
             pulseDeadlineElapsedRealtimeMs = null
             return false
         }
@@ -175,24 +175,30 @@ object StatusBarIconController {
     }
 
     /**
-     * Temporarily adds notification-icon suppression to the saved status-bar wish. Activation is
+     * Temporarily adds status-icon suppression to the saved status-bar wish. Activation is
      * skipped when Shizuku is unavailable and never requests permission; deactivation always clears
      * the in-memory transient bit so a later reconnect restores only the user's persistent wishes.
      */
     @Synchronized
-    fun setTransientNotificationIconSuppression(active: Boolean): Boolean {
+    fun setTransientStatusIconSuppression(active: Boolean): Boolean {
         val packageName = applicationPackageName ?: return false
         if (active && ShizukuState.status.value != ShizukuStatus.READY) return false
 
-        transientHideNotificationIcons = active
+        transientHideStatusIcons = active
         if (ShizukuState.status.value != ShizukuStatus.READY) {
             service = null
             return false
         }
 
         val applied = applyEffectiveFlagsLocked(packageName)
-        if (!applied && active) transientHideNotificationIcons = false
+        if (!applied && active) transientHideStatusIcons = false
         return applied
+    }
+
+    /** Ends the transient arrival lease immediately and reapplies the user's persistent wishes. */
+    @Synchronized
+    fun clearTransientStatusIconSuppression() {
+        clearPulseLocked()
     }
 
     /** Waits against the latest monotonic deadline; a stale wake-up can never clear an extension. */
@@ -217,7 +223,7 @@ object StatusBarIconController {
                 ) {
                     pulseDeadlineElapsedRealtimeMs = null
                     pulseExpiryJob = null
-                    setTransientNotificationIconSuppression(active = false)
+                    setTransientStatusIconSuppression(active = false)
                     true
                 } else {
                     false
@@ -232,7 +238,7 @@ object StatusBarIconController {
         pulseDeadlineElapsedRealtimeMs = null
         pulseExpiryJob?.cancel()
         pulseExpiryJob = null
-        setTransientNotificationIconSuppression(active = false)
+        setTransientStatusIconSuppression(active = false)
     }
 
     /** Replaces the remembered persistent wish without touching transient pulse state. */
@@ -249,7 +255,7 @@ object StatusBarIconController {
     private fun applyEffectiveFlagsLocked(packageName: String): Boolean {
         val effective = StatusBarEffectiveFlags.compose(
             persistent = persistentFlags,
-            transientHideNotificationIcons = transientHideNotificationIcons,
+            transientHideStatusIcons = transientHideStatusIcons,
         )
         return applyFlagsLocked(effective, packageName)
     }
