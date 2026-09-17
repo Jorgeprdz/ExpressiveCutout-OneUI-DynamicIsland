@@ -439,6 +439,14 @@ class MediaPlaybackMonitor(private val context: Context) {
         override fun next() {
             runCatching { controller.transportControls.skipToNext() }
         }
+
+        override val canSeek: Boolean
+            get() = ((controller.playbackState?.actions ?: 0L) and PlaybackState.ACTION_SEEK_TO) != 0L
+
+        override fun seekTo(positionMs: Long) {
+            if (!canSeek) return
+            runCatching { controller.transportControls.seekTo(positionMs.coerceAtLeast(0L)) }
+        }
     }
 
     private data class FallbackWatcher(

@@ -279,34 +279,44 @@ internal fun calculateExpandedNotificationHeightDp(
  */
 internal const val EXPANDED_NOTIFICATION_EXTRA_DP = 160
 
-/**
- * Height of the music progress bar, matching Material 3's LinearProgressIndicator default track.
- */
+/** Legacy linear progress stays the exact 4dp visual track it had before seek support. */
 private const val MEDIA_PROGRESS_HEIGHT_DP = 4
 
-/**
- * Extra height added to the expanded music tile when it shows the progress bar: the bar itself plus
- * the spacing above it. Reserved separately from [expandedActionsExtraDp] because the bar is a third
- * row in the same column — without its own allowance the track text is squeezed out of its slot and
- * the bar, drawn after it, paints over the artist line.
- */
-internal fun expandedMediaProgressExtraDp(): Int = MEDIA_PROGRESS_HEIGHT_DP + ACTIONS_ROW_SPACING_DP
+/** Wavy needs real vertical amplitude instead of being coerced into the legacy 4dp hairline. */
+private const val MEDIA_WAVY_PROGRESS_HEIGHT_DP = 16
 
-/** The music tile's artwork/track row: the album badge's own size, which the text column matches. */
+/** Invisible seek target, overlaid on the bar so it does not alter either layout's measured height. */
+private const val MEDIA_PROGRESS_TOUCH_TARGET_DP = 32
+
+/** Legacy metadata/art row remains exactly 44dp. */
 private const val MEDIA_CONTENT_ROW_HEIGHT_DP = 44
+
+/** Expressive uses a 52dp cover plus enough room for header/title/artist without clipping. */
+private const val MEDIA_EXPRESSIVE_CONTENT_ROW_HEIGHT_DP = 60
+
+internal fun mediaContentRowHeightDp(expressive: Boolean): Int =
+    if (expressive) MEDIA_EXPRESSIVE_CONTENT_ROW_HEIGHT_DP else MEDIA_CONTENT_ROW_HEIGHT_DP
+
+internal fun mediaProgressVisualHeightDp(wavy: Boolean): Int =
+    if (wavy) MEDIA_WAVY_PROGRESS_HEIGHT_DP else MEDIA_PROGRESS_HEIGHT_DP
+
+internal fun mediaProgressTouchTargetDp(): Int = MEDIA_PROGRESS_TOUCH_TARGET_DP
+
+/**
+ * Extra height is visual-only: the 32dp touch target floats over this area and therefore does not
+ * make the card taller. Legacy remains 4 + 12 = 16dp exactly.
+ */
+internal fun expandedMediaProgressExtraDp(wavy: Boolean = false): Int =
+    mediaProgressVisualHeightDp(wavy) + ACTIONS_ROW_SPACING_DP
 
 /** Bottom inset under the music tile's column, matching its layout's own bottom padding. */
 private const val MEDIA_EXPANDED_BOTTOM_PADDING_DP = 16
 
-/**
- * The expanded music tile's base height, taken from its own content rather than the user's expanded
- * height: the camera band, the artwork row, and the bottom inset. Its layout is a top-anchored column
- * with no filler, so a taller card would strand the controls above dead space and a shorter one would
- * squeeze them out of it entirely — hence the height knob is deliberately not applied here. The
- * progress bar and transport controls are added on top of this by the usual height bonuses.
- */
-internal fun mediaExpandedBaseHeightDp(topMarginDp: Int = IslandDimensions.DEFAULT_TOP_MARGIN_DP): Int =
-    topMarginDp + MEDIA_CONTENT_ROW_HEIGHT_DP + MEDIA_EXPANDED_BOTTOM_PADDING_DP
+/** Music base height follows its selected metadata row while preserving the legacy 108dp default. */
+internal fun mediaExpandedBaseHeightDp(
+    topMarginDp: Int = IslandDimensions.DEFAULT_TOP_MARGIN_DP,
+    expressive: Boolean = false,
+): Int = topMarginDp + mediaContentRowHeightDp(expressive) + MEDIA_EXPANDED_BOTTOM_PADDING_DP
 
 /**
  * Bottom inset under the action chips (or the text column when there are none). Kept equal to the
@@ -550,7 +560,12 @@ fun DynamicIsland(
         // The music tile keeps the expanded width, corners and offsets, but sizes itself from its own
         // content — see [mediaExpandedBaseHeightDp].
         isExpanded && shownEvent?.media != null ->
-            expanded.copy(heightDp = mediaExpandedBaseHeightDp(expanded.topMarginDp))
+            expanded.copy(
+                heightDp = mediaExpandedBaseHeightDp(
+                    topMarginDp = expanded.topMarginDp,
+                    expressive = shownEvent.media.materialExpressivePlayer,
+                ),
+            )
         isExpanded -> expanded
         else -> collapsed
     }
@@ -631,7 +646,11 @@ fun DynamicIsland(
         }
         isExpanded && shownEvent?.media != null -> {
             val controlsExtra = if (hasMediaControls) expandedActionsExtraDp(appearance.actionButtonHeightDp) else 0
-            controlsExtra + if (hasMediaProgress) expandedMediaProgressExtraDp() else 0
+            controlsExtra + if (hasMediaProgress) {
+                expandedMediaProgressExtraDp(wavy = shownEvent.media.wavyProgress)
+            } else {
+                0
+            }
         }
         isExpanded && shownEvent?.timer != null ->
             if (hasTimerActions) expandedActionsExtraDp(appearance.actionButtonHeightDp) else 0
@@ -1361,8 +1380,11 @@ internal fun EventBadge(
     val albumArt = albumArtFor(event, nowPlaying)
     if (event.media != null) {
         val trackKey = mediaTrackContentKey(event, nowPlaying)
+        // AnimatedContent is now the direct Box child, so it owns the caller's placement modifier.
         AnimatedContent(
             targetState = MusicArtworkFrame(trackKey, albumArt),
+            modifier = modifier,
+            contentAlignment = Alignment.Center,
             transitionSpec = {
                 fadeIn(animationSpec = tween(160)) togetherWith fadeOut(animationSpec = tween(160))
             },
@@ -1373,13 +1395,12 @@ internal fun EventBadge(
                 AlbumArt(
                     bitmap = frame.artwork,
                     size = badgeSize,
-                    modifier = modifier,
                     rotate = event.media.rotateAlbumArt,
                     playing = nowPlaying?.isPlaying == true,
                     strokeColor = albumArtStrokeFor(event),
                 )
             } else {
-                IconBadge(event = event, badgeSize = badgeSize, iconSize = iconSize, modifier = modifier)
+                IconBadge(event = event, badgeSize = badgeSize, iconSize = iconSize)
             }
         }
         return
@@ -1393,7 +1414,6 @@ internal fun EventBadge(
 
     when {
         callPhoto != null -> ContactPhoto(bitmap = callPhoto, size = badgeSize, modifier = modifier)
-
         else -> IconBadge(event = event, badgeSize = badgeSize, iconSize = iconSize, modifier = modifier)
     }
 }
@@ -2799,9 +2819,8 @@ private fun ReplySendButton(
 }
 
 /**
- * The music tile's expanded layout: album art + track/artist, and (when enabled) a row of
- * previous / play‑pause / next controls. Live state — art, the play vs pause icon and the
- * transport handle — is read from [NowPlayingBus] so the controls stay in sync as playback changes.
+ * The music tile's expanded layout: album art + track/artist, optional seekable progress, and
+ * previous / play‑pause / next controls. Geometry is stable per mode and never keys on progress.
  */
 @Composable
 private fun MediaExpandedContent(
@@ -2821,6 +2840,11 @@ private fun MediaExpandedContent(
         showTimestamp = appearance.showTimestamp,
     )
     val trackKey = mediaTrackContentKey(event, nowPlaying)
+    val progress = nowPlaying?.progress
+    val transport = nowPlaying?.transport
+    val durationMs = progress?.durationMs
+    val seekEnabled = mediaSeekAvailable(durationMs, transport?.canSeek == true)
+    var scrubFraction by remember(trackKey) { mutableStateOf<Float?>(null) }
 
     Box(
         modifier = Modifier
@@ -2831,11 +2855,13 @@ private fun MediaExpandedContent(
             modifier = Modifier
                 .align(Alignment.TopStart)
                 .fillMaxWidth()
-                .padding(top = topMarginDp.dp, bottom = 16.dp),
+                .padding(top = topMarginDp.dp, bottom = MEDIA_EXPANDED_BOTTOM_PADDING_DP.dp),
             verticalArrangement = Arrangement.spacedBy(ACTIONS_ROW_SPACING_DP.dp),
         ) {
             Row(
-                modifier = Modifier.weight(1f, fill = false),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(mediaContentRowHeightDp(expressive).dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(if (expressive) 16.dp else 14.dp),
             ) {
@@ -2858,7 +2884,7 @@ private fun MediaExpandedContent(
                         if (headerText != null) {
                             Text(
                                 text = headerText,
-                                color = event.accent,
+                                color = LocalContentColor.current.copy(alpha = 0.78f),
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Medium,
                                 maxLines = 1,
@@ -2888,10 +2914,11 @@ private fun MediaExpandedContent(
 
             if (media.showProgress) {
                 MediaProgressBar(
-                    progress = nowPlaying?.progress,
+                    progress = progress,
                     wavy = media.wavyProgress,
-                    accent = event.accent,
-                    useAccent = media.useAlbumColours,
+                    resolvedAccent = event.accent,
+                    useAlbumColours = media.useAlbumColours,
+                    scrubFraction = scrubFraction,
                 )
             }
 
@@ -2904,42 +2931,112 @@ private fun MediaExpandedContent(
                     skipStyle = media.skipStyle,
                     playPauseStyle = media.playPauseStyle,
                     expressive = expressive,
-                    onPrevious = { nowPlaying?.transport?.previous() },
-                    onPlayPause = { nowPlaying?.transport?.playPause() },
-                    onNext = { nowPlaying?.transport?.next() },
+                    onPrevious = { transport?.previous() },
+                    onPlayPause = { transport?.playPause() },
+                    onNext = { transport?.next() },
                 )
             }
+        }
+
+        // Float a larger hit target over the visual bar; measured geometry remains unchanged.
+        if (media.showProgress && seekEnabled && durationMs != null && transport != null) {
+            val visualHeightDp = mediaProgressVisualHeightDp(media.wavyProgress)
+            val touchHeightDp = mediaProgressTouchTargetDp()
+            val touchTopDp = topMarginDp +
+                mediaContentRowHeightDp(expressive) +
+                ACTIONS_ROW_SPACING_DP +
+                (visualHeightDp - touchHeightDp) / 2f
+
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .fillMaxWidth()
+                    .offset(y = touchTopDp.dp)
+                    .height(touchHeightDp.dp)
+                    .pointerInput(trackKey, durationMs, transport) {
+                        detectTapGestures { offset ->
+                            val fraction = mediaSeekFraction(offset.x, size.width.toFloat())
+                            val target = mediaSeekTargetMs(offset.x, size.width.toFloat(), durationMs)
+                            if (fraction != null && target != null) {
+                                scrubFraction = fraction
+                                transport.seekTo(target)
+                                scrubFraction = null
+                            }
+                        }
+                    }
+                    .pointerInput(trackKey, durationMs, transport) {
+                        var dragFraction: Float? = null
+                        detectHorizontalDragGestures(
+                            onDragStart = { start ->
+                                dragFraction = mediaSeekFraction(start.x, size.width.toFloat())
+                                scrubFraction = dragFraction
+                            },
+                            onDragEnd = {
+                                dragFraction?.let { fraction ->
+                                    mediaSeekTargetMs(
+                                        xPx = fraction,
+                                        widthPx = 1f,
+                                        durationMs = durationMs,
+                                    )?.let(transport::seekTo)
+                                }
+                                scrubFraction = null
+                                dragFraction = null
+                            },
+                            onDragCancel = {
+                                scrubFraction = null
+                                dragFraction = null
+                            },
+                        ) { change, _ ->
+                            val next = mediaSeekFraction(change.position.x, size.width.toFloat())
+                            if (next != null) {
+                                dragFraction = next
+                                scrubFraction = next
+                                change.consume()
+                            }
+                        }
+                    },
+            )
         }
     }
 }
 
 /**
- * The music tile's playback bar. [MediaProgress] is an anchor rather than a live position — the
- * media session only republishes on a real change, never on a tick — so this drives its own clock
- * while playback runs and extrapolates from that anchor. A session that publishes no track length
- * (a live stream) gets the indeterminate bar instead, matching the notification tile's.
+ * The music tile's playback bar. [MediaProgress] remains the only playback clock. During a drag,
+ * [scrubFraction] temporarily controls only the visual fraction and never track/palette identity.
  */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun MediaProgressBar(
     progress: MediaProgress?,
     wavy: Boolean,
-    accent: Color,
-    useAccent: Boolean,
+    resolvedAccent: Color,
+    useAlbumColours: Boolean,
+    scrubFraction: Float?,
 ) {
-    val color = if (useAccent) accent else MaterialTheme.colorScheme.primary
-    val trackColor = if (useAccent) accent.copy(alpha = 0.24f) else MaterialTheme.colorScheme.primaryContainer
+    val color = resolveMediaProgressAccent(
+        useAlbumColours = useAlbumColours,
+        resolvedAccent = resolvedAccent,
+        themePrimary = MaterialTheme.colorScheme.primary,
+    )
+    val trackColor = if (useAlbumColours) {
+        color.copy(alpha = 0.24f)
+    } else {
+        MaterialTheme.colorScheme.primaryContainer
+    }
+    val barModifier = Modifier
+        .fillMaxWidth()
+        .requiredHeight(mediaProgressVisualHeightDp(wavy).dp)
 
     if (progress?.durationMs == null) {
         if (wavy) {
             LinearWavyProgressIndicator(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = barModifier,
                 color = color,
                 trackColor = trackColor,
             )
         } else {
             LinearProgressIndicator(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = barModifier,
                 color = color,
                 trackColor = trackColor,
                 strokeCap = ProgressIndicatorDefaults.LinearStrokeCap,
@@ -2948,29 +3045,30 @@ private fun MediaProgressBar(
         return
     }
 
-    // Re-anchored on every new snapshot, so a seek or a track change lands immediately rather than
-    // being animated across from the stale position.
     var fraction by remember(progress) {
         mutableFloatStateOf(progress.fractionAt(SystemClock.elapsedRealtime()) ?: 0f)
     }
-    LaunchedEffect(progress) {
+    LaunchedEffect(progress, scrubFraction) {
         while (progress.speed > 0f) {
             delay(PROGRESS_TICK_MS)
-            fraction = progress.fractionAt(SystemClock.elapsedRealtime()) ?: 0f
+            if (scrubFraction == null) {
+                fraction = progress.fractionAt(SystemClock.elapsedRealtime()) ?: 0f
+            }
         }
     }
+    val displayedFraction = scrubFraction ?: fraction
 
     if (wavy) {
         LinearWavyProgressIndicator(
-            progress = { fraction },
-            modifier = Modifier.fillMaxWidth(),
+            progress = { displayedFraction },
+            modifier = barModifier,
             color = color,
             trackColor = trackColor,
         )
     } else {
         LinearProgressIndicator(
-            progress = { fraction },
-            modifier = Modifier.fillMaxWidth(),
+            progress = { displayedFraction },
+            modifier = barModifier,
             color = color,
             trackColor = trackColor,
             strokeCap = ProgressIndicatorDefaults.LinearStrokeCap,

@@ -71,4 +71,11 @@ interface MediaTransport {
     fun previous()
     fun playPause()
     fun next()
+
+    /** Whether the active session explicitly advertises seek support. */
+    val canSeek: Boolean
+        get() = false
+
+    /** Move playback to [positionMs]. Unsupported transports keep the default no-op. */
+    fun seekTo(positionMs: Long) = Unit
 }

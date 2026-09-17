@@ -16,14 +16,23 @@ import org.json.JSONObject
 private val Context.dynamicTileDataStore: DataStore<Preferences> by preferencesDataStore(name = "dynamic_tile_prefs")
 
 /**
- * Persists whether each dynamic tile is allowed to appear on the cutout. Absent means enabled,
- * so tiles show by default and only explicit opt-outs are stored — mirroring [EventPreferences]
- * but kept separate because tiles are a distinct concept from system events.
+ * Resolves a persisted dynamic-tile switch. Assistant is intentionally opt-in on a fresh install;
+ * every other tile keeps the historical enabled-by-default behaviour. An explicit stored/imported
+ * value always wins so existing users are never silently changed.
+ */
+internal fun resolveDynamicTileEnabled(tile: DynamicTile, persisted: Boolean?): Boolean =
+    persisted ?: (tile != DynamicTile.ASSISTANT)
+
+/**
+ * Persists whether each dynamic tile is allowed to appear on the cutout. Assistant is the sole
+ * opt-in tile; every other absent preference remains enabled, matching the historical defaults.
  */
 class DynamicTilePreferences(private val context: Context) : JsonSerializable {
 
     val enabled: Flow<Map<DynamicTile, Boolean>> = context.dynamicTileDataStore.data.map { prefs ->
-        DynamicTile.entries.associateWith { tile -> prefs[tile.key] ?: true }
+        DynamicTile.entries.associateWith { tile ->
+            resolveDynamicTileEnabled(tile, prefs[tile.key])
+        }
     }
 
     suspend fun setEnabled(tile: DynamicTile, enabled: Boolean) = context.dynamicTileDataStore.edit {
@@ -43,14 +52,15 @@ class DynamicTilePreferences(private val context: Context) : JsonSerializable {
     }
 
     /**
-     * Applies { enabled: { TILE_NAME: bool, ... } } exported by [toJson]. Every known tile is set
-     * from the document, defaulting an absent entry to enabled (the store's own default), in one edit.
+     * Applies { enabled: { TILE_NAME: bool, ... } } exported by [toJson]. Explicit imported values
+     * win; a missing entry falls back to that tile's real default (Assistant off, the others on).
      */
     override suspend fun fromJson(json: String) {
         val enabledObj = JSONObject(json).optJSONObject("enabled") ?: return
         context.dynamicTileDataStore.edit { prefs ->
             DynamicTile.entries.forEach { tile ->
-                prefs[tile.key] = enabledObj.optBoolean(tile.name, true)
+                val imported = if (enabledObj.has(tile.name)) enabledObj.getBoolean(tile.name) else null
+                prefs[tile.key] = resolveDynamicTileEnabled(tile, imported)
             }
         }
     }
