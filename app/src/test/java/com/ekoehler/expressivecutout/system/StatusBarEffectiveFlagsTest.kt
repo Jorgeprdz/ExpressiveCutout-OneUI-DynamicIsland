@@ -5,22 +5,19 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** Verifies that transient notification suppression composes with, rather than replaces, user wishes. */
+/** Verifies that transient arrival suppression composes with, rather than replaces, user wishes. */
 class StatusBarEffectiveFlagsTest {
 
     @Test
-    fun `pulse hides notification icons without changing unrelated persistent flags`() {
+    fun `arrival pulse hides status icons without silencing alerts`() {
         val persistent = StatusBarFlagState(
             hideNotificationIcons = false,
-            hideSystemInfo = true,
-            hideClock = true,
+            hideSystemInfo = false,
+            hideClock = false,
             silenceAlerts = false,
         )
 
-        val effective = StatusBarEffectiveFlags.compose(
-            persistent = persistent,
-            transientHideNotificationIcons = true,
-        )
+        val effective = StatusBarEffectiveFlags.compose(persistent, true)
 
         assertTrue(effective.hideNotificationIcons)
         assertTrue(effective.hideSystemInfo)
@@ -37,36 +34,44 @@ class StatusBarEffectiveFlagsTest {
             silenceAlerts = true,
         )
 
-        val effective = StatusBarEffectiveFlags.compose(
-            persistent = persistent,
-            transientHideNotificationIcons = false,
-        )
+        val effective = StatusBarEffectiveFlags.compose(persistent, false)
 
         assertEquals(persistent, effective)
     }
 
     @Test
-    fun `persistent notification hiding remains after pulse ends`() {
-        val persistent = StatusBarFlagState(hideNotificationIcons = true)
+    fun `persistent icon hiding remains after pulse ends`() {
+        val persistent = StatusBarFlagState(
+            hideNotificationIcons = true,
+            hideSystemInfo = true,
+            hideClock = false,
+        )
 
-        val during = StatusBarEffectiveFlags.compose(persistent, transientHideNotificationIcons = true)
-        val after = StatusBarEffectiveFlags.compose(persistent, transientHideNotificationIcons = false)
+        val during = StatusBarEffectiveFlags.compose(persistent, true)
+        val after = StatusBarEffectiveFlags.compose(persistent, false)
 
         assertTrue(during.hideNotificationIcons)
+        assertTrue(during.hideSystemInfo)
+        assertTrue(during.hideClock)
         assertTrue(after.hideNotificationIcons)
+        assertTrue(after.hideSystemInfo)
+        assertFalse(after.hideClock)
     }
 
     @Test
-    fun `pulse changes only notification icon wish`() {
+    fun `arrival pulse preserves persistent alert silence wish`() {
         val persistent = StatusBarFlagState(
             hideNotificationIcons = false,
-            hideSystemInfo = true,
+            hideSystemInfo = false,
             hideClock = false,
             silenceAlerts = true,
         )
 
-        val effective = StatusBarEffectiveFlags.compose(persistent, transientHideNotificationIcons = true)
+        val effective = StatusBarEffectiveFlags.compose(persistent, true)
 
-        assertEquals(persistent.copy(hideNotificationIcons = true), effective)
+        assertTrue(effective.hideNotificationIcons)
+        assertTrue(effective.hideSystemInfo)
+        assertTrue(effective.hideClock)
+        assertTrue(effective.silenceAlerts)
     }
 }

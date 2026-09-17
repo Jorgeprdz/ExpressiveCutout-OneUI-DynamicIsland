@@ -26,7 +26,7 @@ class MusicGeometrySeekPolicyTest {
     }
 
     @Test
-    fun `expressive geometry reserves enough room for artwork and metadata`() {
+    fun `expressive geometry reserves enough room for header title artist and artwork`() {
         val legacy = mediaExpandedBaseHeightDp(
             topMarginDp = IslandDimensions.DEFAULT_TOP_MARGIN_DP,
             expressive = false,
@@ -36,6 +36,7 @@ class MusicGeometrySeekPolicyTest {
             expressive = true,
         )
 
+        assertTrue(mediaContentRowHeightDp(expressive = true) >= 72)
         assertTrue(mediaContentRowHeightDp(expressive = true) >= 52)
         assertTrue(expressive > legacy)
     }
