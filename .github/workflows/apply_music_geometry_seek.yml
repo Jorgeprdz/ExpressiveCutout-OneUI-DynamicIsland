@@ -1,0 +1,98 @@
+name: Apply music geometry seek fix
+
+on:
+  push:
+    branches:
+      - feature/live-activities-dynamic-island
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.event.head_commit.message == '[TEST] cover expressive music geometry and seek regressions'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout exact TEST head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Confirm branch and ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REF_NAME}" = "feature/live-activities-dynamic-island"
+          test "$(git rev-parse HEAD^)" = "f6dafa5a3d349f7424f4842e72941fa99d7b17b7"
+          test "$(git log -1 --pretty=%s)" = "[TEST] cover expressive music geometry and seek regressions"
+          echo "BRANCH=$(git branch --show-current)"
+          echo "HEAD=$(git rev-parse HEAD)"
+          echo "PARENT=$(git rev-parse HEAD^)"
+
+      - name: Validate plain applicator
+        shell: bash
+        run: |
+          set -euo pipefail
+          SCRIPT=.github/scripts/apply_music_geometry_seek.py
+          test -f "$SCRIPT"
+          test "$(wc -c < "$SCRIPT")" = "28439"
+          echo "4ddcc61f591d41a884a40792fff750349c6a2cc85e8e04211a498fd505165532  $SCRIPT" | sha256sum -c -
+          python -m py_compile "$SCRIPT"
+          echo "APPLICATOR_SIZE=$(wc -c < "$SCRIPT")"
+          sha256sum "$SCRIPT"
+
+      - name: Apply bounded implementation
+        run: python .github/scripts/apply_music_geometry_seek.py
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Unit tests
+        run: ./gradlew testDebugUnitTest --no-daemon
+
+      - name: Assemble debug
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: Lint
+        run: ./gradlew lintDebug --no-daemon
+
+      - name: Scope and whitespace audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=f6dafa5a3d349f7424f4842e72941fa99d7b17b7
+          git diff --check
+          git diff --exit-code "$BASE" -- app/build.gradle.kts gradle/libs.versions.toml
+          for path in \
+            app/src/main/java/com/ekoehler/expressivecutout/events/NotificationMediaSessionRegistry.kt \
+            app/src/main/java/com/ekoehler/expressivecutout/service/CutoutNotificationListenerService.kt \
+            app/src/main/java/com/ekoehler/expressivecutout/core/live/LiveActivityRegistry.kt \
+            app/src/main/java/com/ekoehler/expressivecutout/core/live/LiveActivityCoordinator.kt
+          do
+            git diff --exit-code "$BASE" -- "$path"
+          done
+          test "$(grep -c 'versionCode = 4' app/build.gradle.kts)" = "1"
+          test "$(grep -c 'versionName = \"0.2.0-beta\"' app/build.gradle.kts)" = "1"
+          echo '--- changed files ---'
+          git diff --name-only HEAD
+          echo '--- MediaPlaybackMonitor bounded diff ---'
+          git diff -- app/src/main/java/com/ekoehler/expressivecutout/events/MediaPlaybackMonitor.kt
+
+      - name: Commit sole FIX and remove temporary applicator
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/scripts/apply_music_geometry_seek.py .github/workflows/apply_music_geometry_seek.yml
+          git add -A
+          git diff --cached --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m '[FIX] correct expressive music geometry and seek'
+          git push origin HEAD:feature/live-activities-dynamic-island
